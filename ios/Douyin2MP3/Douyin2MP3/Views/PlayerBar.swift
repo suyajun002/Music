@@ -1,4 +1,4 @@
-// 用途：常驻底部播放条，点一下进入全屏播放页。
+// 用途：迷你播放条（音乐 App 样式），固定在页签栏上方，点一下进全屏播放页。
 import SwiftUI
 
 struct PlayerBar: View {
@@ -7,39 +7,48 @@ struct PlayerBar: View {
     private var player: MediaPlayer { service.player }
 
     var body: some View {
-        if player.currentID != nil {
-            Button {
-                player.isExpanded = true
-            } label: {
-                VStack(spacing: 6) {
-                    HStack(spacing: 12) {
-                        Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                            .font(.system(size: 34))
-                            .onTapGesture { player.toggle() }
+        if let id = player.currentID, let item = service.library.items.first(where: { $0.id == id }) {
+            VStack(spacing: 0) {
+                Divider()
+                HStack(spacing: 12) {
+                    ArtworkView(url: service.library.artworkURL(for: item), size: 42, corner: 5)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(player.currentTitle)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            Text("\(player.elapsedText) / \(player.durationText)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button {
-                            player.stop()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(player.currentTitle)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                        Text("抖音")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    ProgressView(value: player.progress).progressViewStyle(.linear)
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        player.toggle()
+                    } label: {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3)
+                            .frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        player.next()
+                    } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.title3)
+                            .frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!player.hasNext)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(.bar)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+                .onTapGesture { player.isExpanded = true }
             }
-            .buttonStyle(.plain)
+            .background(.bar)
         }
     }
 }

@@ -1,4 +1,4 @@
-// 用途：全屏播放页（视频画面 + 控制条）。
+// 用途：全屏「正在播放」（对齐音乐 App：大封面、剩余时间、上一首/下一首、音量与 AirPlay）。
 import SwiftUI
 
 struct PlayerView: View {
@@ -7,85 +7,143 @@ struct PlayerView: View {
 
     private var player: MediaPlayer { service.player }
 
+    private var item: MediaItem? {
+        guard let id = player.currentID else { return nil }
+        return service.library.items.first { $0.id == id }
+    }
+
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Button {
-                    player.isExpanded = false
-                    dismiss()
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.title3)
-                }
-                Spacer()
-                Text("正在播放")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Color.clear.frame(width: 24, height: 24)
-            }
-            .padding(.horizontal)
+        VStack(spacing: 0) {
+            header
 
-            Group {
-                if player.showsVideo {
-                    VideoSurface(player: player.player)
-                } else {
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(.quaternary)
-                        .overlay {
-                            Image(systemName: "waveform")
-                                .font(.system(size: 48))
-                                .foregroundStyle(.secondary)
-                        }
-                }
-            }
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .padding(.horizontal)
+            Spacer(minLength: 8)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text(player.currentTitle)
-                    .font(.headline)
-                    .lineLimit(2)
+            stage
+                .padding(.horizontal, 28)
 
-                HStack {
-                    Text(player.elapsedText)
-                    Slider(
-                        value: Binding(
-                            get: { player.progress },
-                            set: { player.seek(to: $0) }
-                        ),
-                        in: 0...1
-                    )
-                    Text(player.durationText)
-                }
-                .font(.caption)
-                .monospacedDigit()
+            Spacer(minLength: 16)
 
-                HStack(spacing: 40) {
-                    Button {
-                        player.seek(to: max(0, player.progress - 0.05))
-                    } label: {
-                        Image(systemName: "gobackward.10").font(.title2)
-                    }
-                    Button {
-                        player.toggle()
-                    } label: {
-                        Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                            .font(.system(size: 56))
-                    }
-                    Button {
-                        player.seek(to: min(1, player.progress + 0.05))
-                    } label: {
-                        Image(systemName: "goforward.10").font(.title2)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal)
+            titleBlock
+            scrubber
+            transport
+            volumeRow
 
-            Spacer()
+            Spacer(minLength: 12)
         }
-        .padding(.top, 8)
+        .padding(.bottom, 8)
+    }
+
+    // MARK: - 区块
+
+    private var header: some View {
+        HStack {
+            Button {
+                player.isExpanded = false
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 32, height: 32)
+            }
+            Spacer()
+            Text("正在播放")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                player.showsVideo.toggle()
+            } label: {
+                Image(systemName: player.showsVideo ? "music.note" : "play.rectangle")
+                    .font(.body)
+                    .frame(width: 32, height: 32)
+            }
+            .disabled(item == nil)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+    }
+
+    @ViewBuilder
+    private var stage: some View {
+        if player.showsVideo {
+            VideoSurface(player: player.player)
+                .aspectRatio(16 / 9, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        } else {
+            ArtworkView(url: item.flatMap { service.library.artworkURL(for: $0) }, size: 300, corner: 12)
+                .frame(maxWidth: .infinity)
+                .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
+        }
+    }
+
+    private var titleBlock: some View {
+        VStack(spacing: 3) {
+            Text(player.currentTitle)
+                .font(.title3.weight(.semibold))
+                .lineLimit(1)
+            Text("抖音")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 28)
+        .padding(.bottom, 14)
+    }
+
+    private var scrubber: some View {
+        VStack(spacing: 2) {
+            Slider(
+                value: Binding(get: { player.progress }, set: { player.seek(to: $0) }),
+                in: 0...1
+            )
+            HStack {
+                Text(player.elapsedText)
+                Spacer()
+                Text(player.remainingText)
+            }
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 24)
+    }
+
+    private var transport: some View {
+        HStack(spacing: 56) {
+            Button {
+                player.previous()
+            } label: {
+                Image(systemName: "backward.fill").font(.system(size: 30))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                player.toggle()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 34))
+                    .frame(width: 64, height: 64)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                player.next()
+            } label: {
+                Image(systemName: "forward.fill").font(.system(size: 30))
+            }
+            .buttonStyle(.plain)
+            .disabled(!player.hasNext)
+        }
+        .foregroundStyle(.primary)
+        .padding(.top, 18)
+        .padding(.bottom, 14)
+    }
+
+    private var volumeRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "speaker.fill").font(.caption).foregroundStyle(.secondary)
+            SystemVolumeView().frame(height: 32)
+            Image(systemName: "speaker.wave.3.fill").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 24)
     }
 }

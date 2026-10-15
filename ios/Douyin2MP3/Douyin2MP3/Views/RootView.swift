@@ -1,4 +1,4 @@
-// 用途：根视图。两个页签 + 常驻播放条 + 全屏播放页；进入后台时摘掉画面保证声音继续。
+// 用途：根视图。资料库（音乐 App 形态）+ 转视频两个页签，迷你播放条常驻，进后台摘画面保证声音继续。
 import SwiftUI
 
 struct RootView: View {
@@ -7,10 +7,10 @@ struct RootView: View {
 
     var body: some View {
         TabView {
+            LibraryView()
+                .tabItem { Label("资料库", systemImage: "music.note.list") }
             ConvertView()
                 .tabItem { Label("转视频", systemImage: "arrow.down.circle") }
-            LibraryView()
-                .tabItem { Label("音乐库", systemImage: "music.note.list") }
         }
         .safeAreaInset(edge: .bottom) {
             PlayerBar()

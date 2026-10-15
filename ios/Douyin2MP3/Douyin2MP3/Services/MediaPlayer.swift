@@ -1,6 +1,7 @@
-// 用途：全局播放器。锁屏与后台播放靠 audio 会话 + Now Playing；视频画面在后台时主动摘除，保证声音不中断。
+// 用途：全局播放器（音乐 App 的「正在播放」内核）。队列、锁屏信息、封面、后台播放都在这里。
 import AVFoundation
 import MediaPlayer
+import UIKit
 
 @MainActor
 final class MediaPlayer: ObservableObject {
@@ -9,19 +10,27 @@ final class MediaPlayer: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var elapsed: Double = 0
     @Published private(set) var duration: Double = 0
-    /// 后台播放时摘掉画面，避免 iOS 暂停视频渲染导致声音中断。
+    @Published private(set) var artwork: UIImage?
+    /// 后台播放时摘掉画面，避免 iOS 挂起视频渲染导致声音中断。
     @Published var showsVideo = true
-    /// 是否展开全屏播放页。
+    /// 是否展开全屏「正在播放」。
     @Published var isExpanded = false
 
     let player = AVPlayer()
     private var timeObserver: Any?
+    private var queue: [MediaItem] = []
+    private var index = 0
+    private var artworkLoader: @MainActor (MediaItem) -> URL? = { _ in nil }
+    private var fileResolver: @MainActor (MediaItem) -> URL = { _ in URL(fileURLWithPath: "/dev/null") }
 
     init() {
         configureSession()
         addTimeObserver()
         registerRemoteCommands()
     }
+
+    var hasNext: Bool { index + 1 < queue.count }
+    var hasPrevious: Bool { index > 0 }
 
     var progress: Double {
         guard duration > 0 else { return 0 }
@@ -30,15 +39,60 @@ final class MediaPlayer: ObservableObject {
 
     var elapsedText: String { Self.format(elapsed) }
     var durationText: String { Self.format(duration) }
+    /// 音乐 App 右端显示的是剩余时间。
+    var remainingText: String { "-" + Self.format(max(0, duration - elapsed)) }
 
-    func play(item: MediaItem, url: URL) {
-        if currentID != item.id {
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
-            currentID = item.id
-            currentTitle = item.title
-            elapsed = 0
-            duration = item.durationSec ?? 0
+    // MARK: - 播放控制
+
+    /// 由上层注入「文件在哪、封面在哪」，播放器只负责播放本身。
+    func configure(
+        files: @escaping @MainActor (MediaItem) -> URL,
+        artwork: @escaping @MainActor (MediaItem) -> URL?
+    ) {
+        fileResolver = files
+        artworkLoader = artwork
+    }
+
+    func play(items: [MediaItem], startIndex: Int) {
+        queue = items
+        index = max(0, min(startIndex, max(0, items.count - 1)))
+        startCurrent()
+    }
+
+    func play(item: MediaItem) {
+        play(items: [item], startIndex: 0)
+    }
+
+    func next() {
+        guard hasNext else { return }
+        index += 1
+        startCurrent()
+    }
+
+    func previous() {
+        // 音乐 App 的习惯：播放 3 秒内按上一首才真的切歌，否则回到开头
+        if elapsed > 3, currentID != nil {
+            player.seek(to: .zero)
+            return
         }
+        guard hasPrevious else {
+            player.seek(to: .zero)
+            return
+        }
+        index -= 1
+        startCurrent()
+    }
+
+    private func startCurrent() {
+        guard queue.indices.contains(index) else { return }
+        let item = queue[index]
+
+        player.replaceCurrentItem(with: AVPlayerItem(url: fileResolver(item)))
+        currentID = item.id
+        currentTitle = item.title
+        elapsed = 0
+        duration = item.durationSec ?? 0
+        artwork = artworkLoader(item).flatMap { UIImage(contentsOfFile: $0.path) }
         showsVideo = true
         player.play()
         isPlaying = true
@@ -47,11 +101,7 @@ final class MediaPlayer: ObservableObject {
 
     func toggle() {
         guard currentID != nil else { return }
-        if isPlaying {
-            player.pause()
-        } else {
-            player.play()
-        }
+        if isPlaying { player.pause() } else { player.play() }
         isPlaying.toggle()
         updateNowPlaying()
     }
@@ -64,9 +114,12 @@ final class MediaPlayer: ObservableObject {
     func stop() {
         player.pause()
         player.replaceCurrentItem(with: nil)
+        queue = []
+        index = 0
         isPlaying = false
         currentID = nil
         currentTitle = ""
+        artwork = nil
         elapsed = 0
         duration = 0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -89,6 +142,10 @@ final class MediaPlayer: ObservableObject {
                 if let itemDuration = self.player.currentItem?.duration.seconds,
                    itemDuration.isFinite, itemDuration > 0 {
                     self.duration = itemDuration
+                }
+                // 播完自动下一首
+                if self.isPlaying, self.duration > 0, self.elapsed >= self.duration - 0.25 {
+                    if self.hasNext { self.next() }
                 }
                 self.updateNowPlaying()
             }
@@ -115,6 +172,14 @@ final class MediaPlayer: ObservableObject {
             Task { @MainActor in self?.toggle() }
             return .success
         }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.next() }
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.previous() }
+            return .success
+        }
     }
 
     private func updateNowPlaying() {
@@ -127,6 +192,9 @@ final class MediaPlayer: ObservableObject {
         ]
         if duration > 0 {
             info[MPMediaItemPropertyPlaybackDuration] = duration
+        }
+        if let artwork {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
