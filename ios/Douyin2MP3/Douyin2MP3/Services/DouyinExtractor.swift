@@ -70,7 +70,10 @@ struct DouyinConfig {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     var clarityCandidates = ["1080p", "720p", "540p"]
     var requestTimeout: TimeInterval = 60
-    var downloadTimeout: TimeInterval = 600
+    /// 下载空闲上限：超过这么久没有新数据就断开重试，避免连接卡死后一停停十分钟。
+    var downloadIdleTimeout: TimeInterval = 30
+    /// 单条清晰度的下载重试次数（CDN 时常直接 reset 连接，报 network connection was lost）
+    var downloadRetryCount = 3
     /// 并发下载时复用凭证，避免每个任务都去打一次 ttwid
     var cookieRefreshInterval: TimeInterval = 300
     /// 壳页（风控）重试次数
@@ -86,6 +89,10 @@ actor DouyinExtractor {
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
+        // 手机网络抖动时先等回连，而不是立刻报 network connection was lost
+        configuration.waitsForConnectivity = true
+        // 整体上限，避免超大文件（几百 MB）被默认 7 天兜底无限挂着
+        configuration.timeoutIntervalForResource = 1800
         configuration.httpCookieAcceptPolicy = .always
         configuration.httpShouldSetCookies = true
         return URLSession(configuration: configuration)
@@ -457,11 +464,45 @@ actor DouyinExtractor {
         to destination: URL,
         onProgress: @Sendable @escaping (FetchProgress) -> Void
     ) async throws {
+        var lastError: Error = DouyinError.downloadRejected("下载失败")
+
+        for attempt in 1...config.downloadRetryCount {
+            do {
+                try await downloadOnce(cdn: cdn, to: destination, onProgress: onProgress)
+                return
+            } catch {
+                lastError = error
+                DouyinDebug.log("下载第 \(attempt)/\(config.downloadRetryCount) 次失败：\(error.localizedDescription)")
+                guard attempt < config.downloadRetryCount, Self.isTransient(error) else { throw error }
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 700_000_000)
+            }
+        }
+
+        throw lastError
+    }
+
+    /// 只对瞬时网络故障重试；403/地址错误这类确定性失败直接交给上层换清晰度。
+    static func isTransient(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .networkConnectionLost, .timedOut, .cannotConnectToHost, .cannotFindHost,
+             .dnsLookupFailed, .notConnectedToInternet, .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func downloadOnce(
+        cdn: URL,
+        to destination: URL,
+        onProgress: @Sendable @escaping (FetchProgress) -> Void
+    ) async throws {
         var request = URLRequest(url: cdn)
         request.setValue(config.mobileUserAgent, forHTTPHeaderField: "User-Agent")
         // CDN 强制校验 referer，缺失会 403
         request.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
-        request.timeoutInterval = config.downloadTimeout
+        request.timeoutInterval = config.downloadIdleTimeout
 
         let delegate = DownloadProgressDelegate(onProgress: onProgress)
         let (tempURL, response) = try await session.download(for: request, delegate: delegate)
