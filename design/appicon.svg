@@ -1,0 +1,32 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0E0E18"/>
+      <stop offset="0.55" stop-color="#1A1030"/>
+      <stop offset="1" stop-color="#33165C"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#4AD8FF" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#4AD8FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!-- 播放三角：抖音双色错位 + 白色主体 -->
+  <g stroke-linejoin="round" stroke-width="46">
+    <path d="M404 322 L404 618 L666 470 Z" fill="#25F4EE" stroke="#25F4EE" transform="translate(-16,-12)"/>
+    <path d="M404 322 L404 618 L666 470 Z" fill="#FE2C55" stroke="#FE2C55" transform="translate(16,12)"/>
+    <path d="M404 322 L404 618 L666 470 Z" fill="#FFFFFF" stroke="#FFFFFF"/>
+  </g>
+
+  <!-- 音频柱：呼应“音频”而不是“视频” -->
+  <g fill="#FFFFFF">
+    <rect x="372" y="742" width="40" height="86" rx="20" opacity="0.95"/>
+    <rect x="432" y="718" width="40" height="134" rx="20" fill="#25F4EE"/>
+    <rect x="492" y="694" width="40" height="182" rx="20" opacity="0.95"/>
+    <rect x="552" y="718" width="40" height="134" rx="20" fill="#FE2C55"/>
+    <rect x="612" y="742" width="40" height="86" rx="20" opacity="0.95"/>
+  </g>
+</svg>

@@ -16,6 +16,10 @@
 
 播放：`AVPlayer` + `playback` 音频会话 + Now Playing，锁屏和后台继续播放；进入后台时主动摘掉视频图层，避免系统挂起视频渲染导致声音中断。
 
+### 图标
+
+源文件 `design/appicon.svg`，用 `rsvg-convert -w 1024 -h 1024 design/appicon.svg -o design/appicon-1024.png` 出图，再放进 `ios/Douyin2MP3/Douyin2MP3/Assets.xcassets/AppIcon.appiconset`（单尺寸 1024，构建项 `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`）。
+
 ### 安装到 iPhone
 
 用 Xcode 打开 `ios/Douyin2MP3/Douyin2MP3.xcodeproj`，选自己的 Apple ID 作为签名团队，连上手机后 Run。免费 Apple ID 的签名 7 天有效，付费开发者账号 1 年。
