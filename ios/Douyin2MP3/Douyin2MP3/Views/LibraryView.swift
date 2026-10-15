@@ -32,7 +32,7 @@ struct LibraryView: View {
                     ContentUnavailableView(
                         "资料库是空的",
                         systemImage: "music.note.list",
-                        description: Text("到「转视频」里贴一条链接，下载好会自动出现在这里")
+                        description: Text("到「转视频」里贴一条链接下载，或把音频/视频文件放进 App 的「文件」目录，都会自动出现在这里")
                     )
                 } else {
                     List {

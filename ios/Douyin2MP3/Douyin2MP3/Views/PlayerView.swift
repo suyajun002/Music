@@ -49,14 +49,19 @@ struct PlayerView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button {
-                player.showsVideo.toggle()
-            } label: {
-                Image(systemName: player.showsVideo ? "music.note" : "play.rectangle")
-                    .font(.body)
-                    .frame(width: 32, height: 32)
+            // 音频没有画面可切，留个等宽占位保持标题居中。
+            if item?.isAudio != true {
+                Button {
+                    player.showsVideo.toggle()
+                } label: {
+                    Image(systemName: player.showsVideo ? "music.note" : "play.rectangle")
+                        .font(.body)
+                        .frame(width: 32, height: 32)
+                }
+                .disabled(item == nil)
+            } else {
+                Color.clear.frame(width: 32, height: 32)
             }
-            .disabled(item == nil)
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)

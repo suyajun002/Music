@@ -18,7 +18,9 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                player.showsVideo = true
+                // 音频只出封面；视频回前台恢复画面
+                player.showsVideo = player.currentHasPicture
+                Task { await service.adoptExternalMedia() }
             case .background:
                 // 摘掉视频图层，改为纯音频播放，避免被系统挂起
                 player.showsVideo = false
@@ -26,6 +28,8 @@ struct RootView: View {
                 break
             }
         }
+        // 启动时先把外部塞进来的媒体收进资料库（「文件」App 或 Mac 推过来的 MP3）。
+        .task { await service.adoptExternalMedia() }
     }
 
     /// 迷你播放条挂在「每个页面的底部安全区」里：

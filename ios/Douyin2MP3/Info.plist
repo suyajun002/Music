@@ -7,5 +7,10 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<!-- 让 Documents 在「文件」App / Finder 里可见：可以直接把 MP3 拖进来，App 下次启动自动收录 -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 </dict>
 </plist>

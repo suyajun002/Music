@@ -61,6 +61,13 @@ final class ConversionService: ObservableObject {
     var runningCount: Int { gate.running }
     var waitingCount: Int { gate.waitingCount }
 
+    /// 收录外部放进 Documents 的媒体文件（「文件」App 拖入、或 Mac 用 devicectl 推入）。
+    /// 只登记本地文件，不联网、不下载。
+    func adoptExternalMedia() async {
+        let adopted = await library.adoptExternalFiles()
+        if adopted > 0 { DouyinDebug.log("资料库收录外部文件 \(adopted) 个") }
+    }
+
     // MARK: - 提交
 
     /// 「粘贴即自动下载」入口：界面把文本原样交进来，识别与去重都在这里判断。

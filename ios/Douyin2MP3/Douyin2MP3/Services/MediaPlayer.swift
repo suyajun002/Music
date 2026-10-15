@@ -11,6 +11,8 @@ final class MediaPlayer: ObservableObject {
     @Published private(set) var elapsed: Double = 0
     @Published private(set) var duration: Double = 0
     @Published private(set) var artwork: UIImage?
+    /// 当前条目的媒体类型：决定播放页显示画面还是封面。
+    @Published private(set) var currentKind: MediaKind = .video
     /// 后台播放时摘掉画面，避免 iOS 挂起视频渲染导致声音中断。
     @Published var showsVideo = true
     /// 是否展开全屏「正在播放」。
@@ -34,6 +36,8 @@ final class MediaPlayer: ObservableObject {
 
     var hasNext: Bool { index + 1 < queue.count }
     var hasPrevious: Bool { index > 0 }
+    /// 当前这首有没有画面可看（音频只显示封面，切画面的按钮也不出现）。
+    var currentHasPicture: Bool { currentKind.hasPicture }
 
     var progress: Double {
         guard duration > 0 else { return 0 }
@@ -96,7 +100,8 @@ final class MediaPlayer: ObservableObject {
         elapsed = 0
         duration = item.durationSec ?? 0
         artwork = artworkLoader(item).flatMap { UIImage(contentsOfFile: $0.path) }
-        showsVideo = true
+        currentKind = item.kind
+        showsVideo = item.kind.hasPicture
         player.play()
         isPlaying = true
         updateNowPlaying()
@@ -125,6 +130,7 @@ final class MediaPlayer: ObservableObject {
         isPlaying = false
         currentID = nil
         currentTitle = ""
+        currentKind = .video
         artwork = nil
         elapsed = 0
         duration = 0

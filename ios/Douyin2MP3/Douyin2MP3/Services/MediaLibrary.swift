@@ -42,7 +42,8 @@ final class MediaLibrary: ObservableObject {
         items.contains { $0.sourceURL == sourceURL }
     }
 
-    /// 入库：抽首帧做封面，读时长，写索引。
+    /// 入库：按类型取封面（视频抽首帧、音频读内嵌图），读时长，写索引。
+    /// 标题优先用显式传入的（抖音取流结果），其次文件自身元数据，最后退回文件名。
     func register(videoID: String, title: String?, fileName: String, sourceURL: String?) async {
         if contains(videoID: videoID) { return }
         let url = directory.appendingPathComponent(fileName)
@@ -51,7 +52,7 @@ final class MediaLibrary: ObservableObject {
 
         let item = MediaItem(
             id: videoID,
-            title: title?.isEmpty == false ? title! : "未命名音频",
+            title: await Self.resolveTitle(explicit: title, url: url),
             fileName: fileName,
             artworkFileName: artworkName,
             sizeBytes: size,
@@ -61,6 +62,42 @@ final class MediaLibrary: ObservableObject {
         )
         items.insert(item, at: 0)
         persist()
+    }
+
+    // MARK: - 外部文件收录
+
+    /// 把 Documents/Video 下还没入库的媒体文件补进资料库。
+    /// 「文件」App 拖进来的、或由 Mac 用 devicectl 推进来的 MP3/MP4 都靠这一步出现在列表里。
+    @discardableResult
+    func adoptExternalFiles() async -> Int {
+        let known = Set(items.map(\.fileName))
+        let files = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        let pending = files
+            .filter { MediaKind.isSupported(fileName: $0.lastPathComponent) }
+            .filter { !known.contains($0.lastPathComponent) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for url in pending {
+            let name = url.lastPathComponent
+            await register(videoID: uniqueID(for: name), title: nil, fileName: name, sourceURL: nil)
+        }
+        return pending.count
+    }
+
+    /// 入库 id 兼作封面文件名，这里统一净化并保证唯一（文件名本身可以带任意字符）。
+    private func uniqueID(for fileName: String) -> String {
+        let stem = (fileName as NSString).deletingPathExtension
+        let cleaned = stem
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = cleaned.isEmpty ? UUID().uuidString : String(cleaned.prefix(60))
+        var candidate = base
+        var suffix = 2
+        while items.contains(where: { $0.id == candidate }) {
+            candidate = "\(base) \(suffix)"
+            suffix += 1
+        }
+        return candidate
     }
 
     func delete(_ item: MediaItem) {
@@ -86,19 +123,59 @@ final class MediaLibrary: ObservableObject {
         return duration.seconds
     }
 
-    /// 抽视频首帧当封面（音乐 App 的专辑图位置）。失败返回 nil，界面用占位图。
-    private static func makeArtwork(from videoURL: URL, directory: URL, id: String) async -> String? {
-        let asset = AVURLAsset(url: videoURL)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 900, height: 900)
+    /// 标题优先级：显式标题 → 文件内嵌元数据标题 → 文件名（去扩展名）。
+    private static func resolveTitle(explicit: String?, url: URL) async -> String {
+        if let explicit, !explicit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return explicit
+        }
+        if let embedded = await metadataTitle(of: url), !embedded.isEmpty {
+            return embedded
+        }
+        let stem = url.deletingPathExtension().lastPathComponent
+        return stem.isEmpty ? "未命名音频" : stem
+    }
 
+    private static func metadataTitle(of url: URL) async -> String? {
+        let asset = AVURLAsset(url: url)
         guard
-            let cgImage = try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image,
-            let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.9)
+            let metadata = try? await asset.load(.commonMetadata),
+            let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierTitle).first,
+            let value = try? await item.load(.stringValue)
         else { return nil }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
-        let name = "\(id).jpg"
+    /// 音频的内嵌专辑图（转码时写进去的 ID3 封面）。
+    private static func embeddedArtwork(of url: URL) async -> CGImage? {
+        let asset = AVURLAsset(url: url)
+        guard
+            let metadata = try? await asset.load(.commonMetadata),
+            let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .commonIdentifierArtwork).first,
+            let data = try? await item.load(.dataValue),
+            let image = UIImage(data: data)
+        else { return nil }
+        return image.cgImage
+    }
+
+    /// 封面（音乐 App 的专辑图位置）：视频抽第 1 秒画面，音频读内嵌专辑图。
+    /// 都没有则返回 nil，界面用占位图，不阻塞入库。
+    private static func makeArtwork(from videoURL: URL, directory: URL, id: String) async -> String? {
+        let cgImage: CGImage?
+        if MediaKind(fileName: videoURL.lastPathComponent).hasPicture {
+            let asset = AVURLAsset(url: videoURL)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 900, height: 900)
+            cgImage = (try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)).image) ?? nil
+        } else {
+            cgImage = await embeddedArtwork(of: videoURL)
+        }
+
+        guard let cgImage, let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.9) else {
+            return nil
+        }
+
+        let name = "\(id.replacingOccurrences(of: "/", with: "_")).jpg"
         try? data.write(to: directory.appendingPathComponent(name), options: .atomic)
         return name
     }
