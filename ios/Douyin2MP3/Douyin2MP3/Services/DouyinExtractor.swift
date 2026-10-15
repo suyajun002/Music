@@ -1,0 +1,461 @@
+// 用途：在手机上完成抖音取流全链路（短链解析 → ttwid 凭证 → share 页解析 → CDN 直链 → 无水印下载）。
+// 逻辑与 ~/.agents/skills/douyin-skill/scripts/douyin-dl.mjs 保持一致；接口调整时两边都要改。
+import Foundation
+
+enum DouyinError: LocalizedError {
+    case linkFormat
+    case shortLinkFailed
+    case shellPage
+    case noVideoData
+    case imageOnly
+    case playRejected(String)
+    case downloadRejected(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .linkFormat: return "没找到链接，请粘贴抖音分享文本或链接"
+        case .shortLinkFailed: return "抖音短链接解析失败，链接可能已失效"
+        case .shellPage: return "抖音返回了空壳页面（风控或接口已调整），稍后重试"
+        case .noVideoData: return "这条作品没有可下载的视频数据"
+        case .imageOnly: return "这是图文作品，没有视频"
+        case .playRejected(let detail): return "获取视频直链失败：\(detail)"
+        case .downloadRejected(let detail): return "视频下载失败：\(detail)"
+        }
+    }
+}
+
+struct ExtractedVideo {
+    let videoID: String
+    let title: String?
+    let imageCount: Int
+}
+
+/// 取流所需的全部请求参数集中在这里，便于接口变化时统一调整。
+struct DouyinConfig {
+    var mobileUserAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    var desktopUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    var clarityCandidates = ["1080p", "720p", "540p"]
+    var requestTimeout: TimeInterval = 60
+    var downloadTimeout: TimeInterval = 600
+}
+
+actor DouyinExtractor {
+    private let config: DouyinConfig
+    private var cookieJar: [String: String] = [:]
+
+    private let noRedirect = NoRedirectSession()
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 60
+        configuration.httpCookieAcceptPolicy = .always
+        configuration.httpShouldSetCookies = true
+        return URLSession(configuration: configuration)
+    }()
+
+    init(config: DouyinConfig = DouyinConfig()) {
+        self.config = config
+    }
+
+    // MARK: - 主流程
+
+    /// 取回流媒体文件并落到 destination；stage 回调用于向用户展示当前进度。
+    func fetchVideo(
+        shareText: String,
+        to destination: URL,
+        onStage: @Sendable @escaping (String, Double) -> Void
+    ) async throws -> ExtractedVideo {
+        onStage("解析链接", 0.05)
+        let videoID = try await resolveVideoID(from: shareText)
+
+        onStage("获取访问凭证", 0.10)
+        await refreshCookies()
+
+        onStage("解析作品信息", 0.16)
+        let html = try await fetchShareHTML(videoID: videoID)
+        let parsed = parseShareHTML(html)
+
+        if parsed.uri == nil {
+            if !parsed.images.isEmpty { throw DouyinError.imageOnly }
+            throw DouyinError.noVideoData
+        }
+        guard let uri = parsed.uri else { throw DouyinError.noVideoData }
+
+        onStage("下载视频", 0.25)
+        try await downloadFirstAvailable(uri: uri, to: destination) { ratio in
+            onStage("下载视频", 0.25 + ratio * 0.7)
+        }
+
+        onStage("保存到手机", 0.98)
+        return ExtractedVideo(videoID: videoID, title: parsed.desc, imageCount: parsed.images.count)
+    }
+
+    // MARK: - 链接解析
+
+    func resolveVideoID(from shareText: String) async throws -> String {
+        let firstURL = try Self.firstURL(in: shareText)
+        let resolved: URL
+        if firstURL.host?.contains("v.douyin.com") == true {
+            guard
+                let location = try await redirectLocation(
+                    url: firstURL,
+                    userAgent: config.mobileUserAgent,
+                    referer: nil
+                ),
+                let target = URL(string: location, relativeTo: firstURL)
+            else { throw DouyinError.shortLinkFailed }
+            resolved = target
+        } else {
+            resolved = firstURL
+        }
+
+        if let modalID = URLComponents(url: resolved, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "modal_id" })?.value,
+           !modalID.isEmpty {
+            return modalID
+        }
+
+        let last = resolved.path.split(separator: "/").last.map(String.init) ?? ""
+        guard !last.isEmpty else { throw DouyinError.linkFormat }
+        return last
+    }
+
+    /// 从分享文本里抠出第一个 https 链接，并去掉结尾的中文标点。
+    static func firstURL(in text: String) throws -> URL {
+        let pattern = "https://[^\\s]+"
+        guard
+            let regex = try? NSRegularExpression(pattern: pattern),
+            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+            let range = Range(match.range, in: text)
+        else { throw DouyinError.linkFormat }
+
+        var raw = String(text[range])
+        while let last = raw.last, "，。；;、".contains(last) {
+            raw.removeLast()
+        }
+        guard let url = URL(string: raw) else { throw DouyinError.linkFormat }
+        return url
+    }
+
+    // MARK: - 反爬 Cookie
+
+    private func refreshCookies() async {
+        // 1. 首页基础 Cookie（失败不致命）
+        if let url = URL(string: "https://www.douyin.com/") {
+            var request = URLRequest(url: url)
+            request.setValue(config.desktopUserAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
+            if let (data, response) = try? await session.data(for: request) {
+                storeCookies(from: response, url: url, body: data)
+            }
+        }
+
+        // 2. 注册 ttwid（无它 share 页会退化为壳页）
+        guard let url = URL(string: "https://ttwid.bytedance.com/ttwid/union/register/") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(config.desktopUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload: [String: Any] = [
+            "region": "cn",
+            "aid": 1768,
+            "needFid": false,
+            "union": true,
+            "service": "www.ixigua.com",
+            "cbUrlProtocol": "https",
+            "migrate_info": ["ticket": "", "source": "node"],
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        if let (data, response) = try? await session.data(for: request) {
+            storeCookies(from: response, url: url, body: data)
+        }
+    }
+
+    /// 同时解析响应头里的 Set-Cookie 与 URLSession Cookie 存储，尽量贴近脚本的 Cookie 池行为。
+    private func storeCookies(from response: URLResponse, url: URL, body: Data) {
+        guard let http = response as? HTTPURLResponse else { return }
+        for cookie in HTTPCookie.cookies(withResponseHeaderFields: http.allHeaderFields as? [String: String] ?? [:], for: url) {
+            cookieJar[cookie.name] = cookie.value
+        }
+        for cookie in session.configuration.httpCookieStorage?.cookies ?? [] {
+            cookieJar[cookie.name] = cookie.value
+        }
+    }
+
+    private var cookieHeader: String {
+        cookieJar.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+    }
+
+    // MARK: - share 页
+
+    private func fetchShareHTML(videoID: String) async throws -> String {
+        let candidates = [
+            "https://www.iesdouyin.com/share/video/\(videoID)/",
+            "https://www.iesdouyin.com/share/note/\(videoID)/",
+        ]
+
+        for candidate in candidates {
+            guard let url = URL(string: candidate) else { continue }
+            var request = URLRequest(url: url)
+            request.setValue(config.mobileUserAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
+            if !cookieHeader.isEmpty {
+                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            }
+            guard
+                let (data, _) = try? await session.data(for: request),
+                let html = String(data: data, encoding: .utf8)
+            else { continue }
+
+            // 壳页只有几 KB 且不含 aweme 数据
+            if html.contains("\"aweme_type\"") { return html }
+        }
+
+        throw DouyinError.shellPage
+    }
+
+    // MARK: - 页面解析
+
+    struct ParsedShare {
+        let uri: String?
+        let images: [[String]]
+        let desc: String?
+    }
+
+    func parseShareHTML(_ html: String) -> ParsedShare {
+        let images = Self.extractImages(html)
+
+        var uri: String?
+        if let match = Self.firstMatch(#""play_addr":\{"uri":"([^"]+)""#, in: html) {
+            uri = match
+        }
+
+        var desc: String?
+        if let raw = Self.firstMatch(#""desc":"((?:[^"\\]|\\.)*)""#, in: html) {
+            desc = Self.unescapeJSONString(raw) ?? raw
+        }
+
+        return ParsedShare(uri: uri, images: images, desc: desc)
+    }
+
+    /// 图文作品的 images 数组会被页面重复插入，按 uri 去重合并各规格 URL。
+    static func extractImages(_ html: String) -> [[String]] {
+        let bytes = Array(html.utf8)
+        let needle = Array("\"images\":[".utf8)
+        var byURI: [String: [String]] = [:]
+        var order: [String] = []
+
+        var index = 0
+        while index + needle.count <= bytes.count {
+            guard let found = find(needle, in: bytes, from: index) else { break }
+            let openIndex = found + needle.count - 1
+            index = openIndex + 1
+
+            guard let slice = balancedArray(bytes, from: openIndex) else { continue }
+            let json = String(decoding: slice, as: UTF8.self)
+                .replacingOccurrences(of: "\\u002F", with: "/")
+            guard
+                let data = json.data(using: .utf8),
+                let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else { continue }
+
+            for item in list {
+                guard let uri = item["uri"] as? String else { continue }
+                let urls = (item["url_list"] as? [String]) ?? []
+                if var existing = byURI[uri] {
+                    for url in urls where !existing.contains(url) { existing.append(url) }
+                    byURI[uri] = existing
+                } else {
+                    byURI[uri] = urls
+                    order.append(uri)
+                }
+            }
+        }
+
+        return order.compactMap { byURI[$0] }
+    }
+
+    private static func find(_ needle: [UInt8], in haystack: [UInt8], from start: Int) -> Int? {
+        guard !needle.isEmpty, start >= 0, start < haystack.count else { return nil }
+        let limit = haystack.count - needle.count
+        var i = start
+        while i <= limit {
+            if haystack[i] == needle[0] {
+                var j = 1
+                while j < needle.count, haystack[i + j] == needle[j] { j += 1 }
+                if j == needle.count { return i }
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// 从 `[` 起取配平方括号内容（页面里的 JSON 是分段插入的，不能直接整体 parse）。
+    private static func balancedArray(_ bytes: [UInt8], from openIndex: Int) -> [UInt8]? {
+        var depth = 0
+        var i = openIndex
+        while i < bytes.count {
+            if bytes[i] == UInt8(ascii: "[") {
+                depth += 1
+            } else if bytes[i] == UInt8(ascii: "]") {
+                depth -= 1
+                if depth == 0 { return Array(bytes[openIndex...i]) }
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private static func firstMatch(_ pattern: String, in text: String) -> String? {
+        guard
+            let regex = try? NSRegularExpression(pattern: pattern),
+            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+            match.numberOfRanges > 1,
+            let range = Range(match.range(at: 1), in: text)
+        else { return nil }
+        return String(text[range])
+    }
+
+    private static func unescapeJSONString(_ raw: String) -> String? {
+        guard let data = "\"\(raw)\"".data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? String
+    }
+
+    // MARK: - 换取 CDN 直链并下载
+
+    private func cdnURL(uri: String, ratio: String) async throws -> URL {
+        guard
+            let url = URL(string: "https://aweme.snssdk.com/aweme/v1/play/?video_id=\(uri)&ratio=\(ratio)&line=0")
+        else { throw DouyinError.playRejected("地址拼装失败") }
+
+        guard
+            let location = try await redirectLocation(
+                url: url,
+                userAgent: config.mobileUserAgent,
+                referer: nil
+            ),
+            let cdn = URL(string: location)
+        else { throw DouyinError.playRejected("接口没有返回跳转（\(ratio)）") }
+
+        return cdn
+    }
+
+    private func downloadFirstAvailable(
+        uri: String,
+        to destination: URL,
+        onProgress: @Sendable @escaping (Double) -> Void
+    ) async throws {
+        var lastError: Error = DouyinError.downloadRejected("所有清晰度均失败")
+
+        for ratio in config.clarityCandidates {
+            do {
+                let cdn = try await cdnURL(uri: uri, ratio: ratio)
+                try await download(cdn: cdn, to: destination, onProgress: onProgress)
+                return
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError
+    }
+
+    private func download(
+        cdn: URL,
+        to destination: URL,
+        onProgress: @Sendable @escaping (Double) -> Void
+    ) async throws {
+        var request = URLRequest(url: cdn)
+        request.setValue(config.mobileUserAgent, forHTTPHeaderField: "User-Agent")
+        // CDN 强制校验 referer，缺失会 403
+        request.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
+        request.timeoutInterval = config.downloadTimeout
+
+        let delegate = DownloadProgressDelegate(onProgress: onProgress)
+        let (tempURL, response) = try await session.download(for: request, delegate: delegate)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw DouyinError.downloadRejected("没有响应")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw DouyinError.downloadRejected("HTTP \(http.statusCode)")
+        }
+
+        let size = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int) ?? nil
+        guard let size, size > 1024 else {
+            throw DouyinError.downloadRejected("文件过小")
+        }
+        guard try Self.looksLikeMP4(tempURL) else {
+            throw DouyinError.downloadRejected("下载内容不是有效视频")
+        }
+
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.moveItem(at: tempURL, to: destination)
+    }
+
+    /// 校验 MP4 的 ftyp 签名，只读前 64 字节。
+    static func looksLikeMP4(_ url: URL) throws -> Bool {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let head = try handle.read(upToCount: 64) ?? Data()
+        return head.range(of: Data("ftyp".utf8)) != nil
+    }
+
+    /// 发一个不跟随跳转的请求，返回 302 的 Location。
+    private func redirectLocation(url: URL, userAgent: String, referer: String?) async throws -> String? {
+        var request = URLRequest(url: url)
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        if let referer {
+            request.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        let (_, response) = try await noRedirect.session.data(for: request, delegate: noRedirect)
+        return (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Location")
+    }
+}
+
+/// 取消自动跟随跳转，让上层自己读 Location（短链与 play 接口都依赖这一步）。
+private final class NoRedirectSession: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    lazy var session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 60
+        configuration.httpCookieAcceptPolicy = .always
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        nil
+    }
+}
+
+/// 下载进度回调：把字节进度交给上层显示。
+private final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let onProgress: @Sendable (Double) -> Void
+
+    init(onProgress: @escaping @Sendable (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+    }
+}

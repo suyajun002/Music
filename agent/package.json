@@ -1,0 +1,15 @@
+{
+  "name": "douyin2mp3-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "douyin2mp3-agent": "bin/douyin2mp3-agent.mjs"
+  },
+  "scripts": {
+    "start": "node bin/douyin2mp3-agent.mjs"
+  }
+}
