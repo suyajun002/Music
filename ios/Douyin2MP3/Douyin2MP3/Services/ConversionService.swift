@@ -26,6 +26,10 @@ final class ConversionService: ObservableObject {
     private var gate = ConcurrencyGate()
 
     init() {
+        // 上次被掐断的半截下载会堆在 tmp 里（实测到过 1GB+），启动先清干净
+        let purged = MediaDownloader.purgeOrphanedTempFiles()
+        if purged > 0 { DouyinDebug.log("清理残留下载文件 \(purged) 个") }
+
         let library = MediaLibrary()
         let player = MediaPlayer()
         player.configure(
@@ -129,6 +133,7 @@ final class ConversionService: ObservableObject {
             job.progress = 0.02
             job.progressUnknown = false
             job.downloadedBytes = 0
+            job.attempt = nil
         }
 
         let destination = library.destination(for: jobID)
@@ -137,6 +142,7 @@ final class ConversionService: ObservableObject {
                 Task { @MainActor in
                     self?.update(jobID) { job in
                         job.stage = stage
+                        job.attempt = progress.attempt
                         if let fraction = progress.fraction {
                             job.progress = fraction
                             job.progressUnknown = false
@@ -162,6 +168,7 @@ final class ConversionService: ObservableObject {
                 job.stage = "已保存到手机"
                 job.progress = 1
                 job.progressUnknown = false
+                job.attempt = nil
                 job.title = result.title
                 job.videoID = result.videoID
                 job.sizeBytes = item?.sizeBytes
@@ -174,6 +181,7 @@ final class ConversionService: ObservableObject {
             update(jobID) { job in
                 job.state = .failed
                 job.stage = "失败"
+                job.attempt = nil
                 job.error = message
             }
         }

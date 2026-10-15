@@ -46,6 +46,8 @@ struct ExtractedVideo {
 struct FetchProgress {
     var fraction: Double?
     var bytesWritten: Int64 = 0
+    /// 当前在试的「清晰度·线路」说明，让用户看到正在换线路重试而不是卡死。
+    var attempt: String?
 
     static func at(_ fraction: Double) -> FetchProgress {
         FetchProgress(fraction: fraction, bytesWritten: 0)
@@ -446,14 +448,25 @@ actor DouyinExtractor {
 
         for ratio in config.clarityCandidates {
             for line in config.lineCandidates {
+                let label = "\(ratio)·线路\(line)"
                 do {
                     let cdn = try await cdnURL(uri: uri, ratio: ratio, line: line)
-                    DouyinDebug.log("试 \(ratio) line=\(line) → \(cdn.host ?? "-")")
-                    try await download(cdn: cdn, to: destination, onProgress: onProgress)
-                    DouyinDebug.log("\(ratio) line=\(line) 下载成功")
+                    DouyinDebug.log("试 \(label) → \(cdn.host ?? "-")")
+                    // 先报一次，让界面显示「正在试哪个线路」，而不是原地停在 25%
+                    onProgress(FetchProgress(fraction: 0.25, bytesWritten: 0, attempt: label))
+                    try await download(cdn: cdn, to: destination) { progress in
+                        var tagged = progress
+                        tagged.attempt = label
+                        // 每 50MB 打一条日志，足够定位又不会刷屏
+                        if progress.bytesWritten / 1_048_576 % 50 == 0 {
+                            DouyinDebug.log("\(label) 已下 \(progress.bytesWritten / 1_048_576)MB")
+                        }
+                        onProgress(tagged)
+                    }
+                    DouyinDebug.log("\(label) 下载成功")
                     return
                 } catch {
-                    DouyinDebug.log("\(ratio) line=\(line) 失败：\(error.localizedDescription)")
+                    DouyinDebug.log("\(label) 失败：\(error.localizedDescription)")
                     lastError = error
                 }
             }
@@ -473,32 +486,20 @@ actor DouyinExtractor {
         request.setValue("https://www.douyin.com/", forHTTPHeaderField: "Referer")
         request.timeoutInterval = config.downloadIdleTimeout
 
-        let delegate = DownloadProgressDelegate(onProgress: onProgress)
-        let (tempURL, response) = try await session.download(for: request, delegate: delegate)
-
-        guard let http = response as? HTTPURLResponse else {
-            throw DouyinError.downloadRejected("没有响应")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw DouyinError.downloadRejected("HTTP \(http.statusCode)")
+        // 走后台会话：锁屏/切后台时下载继续，且会话级 delegate 才收得到进度
+        try await MediaDownloader.shared.download(request, to: destination) { written, expected in
+            onProgress(FetchProgress.fromBytes(totalWritten: written, expected: expected))
         }
 
-        let size = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int) ?? nil
+        let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int) ?? nil
         guard let size, size > 1024 else {
+            try? FileManager.default.removeItem(at: destination)
             throw DouyinError.downloadRejected("文件过小")
         }
-        guard try Self.looksLikeMP4(tempURL) else {
+        guard try Self.looksLikeMP4(destination) else {
+            try? FileManager.default.removeItem(at: destination)
             throw DouyinError.downloadRejected("下载内容不是有效视频")
         }
-
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.moveItem(at: tempURL, to: destination)
     }
 
     /// 校验 MP4 的 ftyp 签名，只读前 64 字节。
@@ -540,36 +541,3 @@ private final class NoRedirectSession: NSObject, URLSessionTaskDelegate, @unchec
     }
 }
 
-/// 下载进度回调：把字节进度交给上层显示。
-private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let onProgress: @Sendable (FetchProgress) -> Void
-    private var lastLoggedMB: Int64 = -1
-
-    init(onProgress: @escaping @Sendable (FetchProgress) -> Void) {
-        self.onProgress = onProgress
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        let progress = FetchProgress.fromBytes(totalWritten: totalBytesWritten, expected: totalBytesExpectedToWrite)
-        let mb = totalBytesWritten / 1_048_576
-        if mb != lastLoggedMB {
-            lastLoggedMB = mb
-            DouyinDebug.log("下载 written=\(totalBytesWritten)B expected=\(totalBytesExpectedToWrite)B fraction=\(progress.fraction.map { String(format: "%.3f", $0) } ?? "nil")")
-        }
-        onProgress(progress)
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        DouyinDebug.log("下载完成 → \(location.path)")
-    }
-}

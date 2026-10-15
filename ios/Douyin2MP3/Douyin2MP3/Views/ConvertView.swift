@@ -188,10 +188,14 @@ private struct JobRow: View {
     private var statusText: String {
         if job.state == .failed { return job.error ?? "下载失败" }
         if job.state == .running {
+            var parts = [job.stage]
+            if let attempt = job.attempt { parts.append(attempt) }
             if job.progressUnknown {
-                return "\(job.stage) · 已下载 \(job.downloadedText)"
+                parts.append("已下载 \(job.downloadedText)")
+            } else {
+                parts.append("\(Int(job.progress * 100))%")
             }
-            return "\(job.stage) \(Int(job.progress * 100))%"
+            return parts.joined(separator: " · ")
         }
         return job.stage
     }

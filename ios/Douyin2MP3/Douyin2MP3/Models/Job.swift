@@ -16,6 +16,8 @@ struct Job: Identifiable, Equatable {
     /// 服务器没给总大小时为 true：此时进度条走「不确定」样式，只显示已下载字节。
     var progressUnknown: Bool = false
     var downloadedBytes: Int64 = 0
+    /// 正在尝试的「清晰度·线路」，让用户看到换线路重试的过程。
+    var attempt: String?
     var title: String?
     var videoID: String?
     var fileName: String?
