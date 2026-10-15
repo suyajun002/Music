@@ -9,10 +9,13 @@ enum JobState: String, Codable {
 
 struct Job: Identifiable, Equatable {
     let id: String
-    let sourceText: String
+    let sourceURL: String
     var state: JobState = .queued
     var stage: String = "排队中"
     var progress: Double = 0
+    /// 服务器没给总大小时为 true：此时进度条走「不确定」样式，只显示已下载字节。
+    var progressUnknown: Bool = false
+    var downloadedBytes: Int64 = 0
     var title: String?
     var videoID: String?
     var fileName: String?
@@ -30,12 +33,17 @@ struct Job: Identifiable, Equatable {
         guard let sizeBytes else { return "" }
         return String(format: "%.1f MB", Double(sizeBytes) / 1024 / 1024)
     }
+
+    var downloadedText: String {
+        String(format: "%.1f MB", Double(downloadedBytes) / 1024 / 1024)
+    }
 }
 
 struct MediaItem: Codable, Identifiable, Equatable {
     let id: String
     var title: String
     var fileName: String
+    var artworkFileName: String?
     var sizeBytes: Int?
     var durationSec: Double?
     var savedAt: Date

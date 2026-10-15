@@ -1,24 +1,58 @@
-// 用途：App 状态中枢。把「提交链接 → 取流 → 存到手机」串成一条顺序执行的确定性流程。
+// 用途：App 状态中枢。一次可提交多条链接，按可配置的并发数并行下载，逐条落库。
 import Foundation
 
 @MainActor
 final class ConversionService: ObservableObject {
+    static let concurrencyOptions = [1, 2, 3, 4, 6]
+    private static let concurrencyKey = "conversion.maxConcurrent"
+
     @Published private(set) var jobs: [Job] = []
     @Published var lastError: String?
     @Published var isSubmitting = false
 
-    let library = MediaLibrary()
-    let player = MediaPlayer()
+    /// 并行下载数：用户可调并持久化，改完立刻重新调度。
+    @Published var maxConcurrent: Int {
+        didSet {
+            UserDefaults.standard.set(maxConcurrent, forKey: Self.concurrencyKey)
+            gate.limit = maxConcurrent
+            pump()
+        }
+    }
+
+    let library: MediaLibrary
+    let player: MediaPlayer
 
     private let extractor = DouyinExtractor()
-    private var isProcessing = false
+    private var gate = ConcurrencyGate()
+
+    init() {
+        let library = MediaLibrary()
+        let player = MediaPlayer()
+        player.configure(
+            files: { media in library.fileURL(for: media) },
+            artwork: { media in library.artworkURL(for: media) }
+        )
+        self.library = library
+        self.player = player
+
+        let stored = UserDefaults.standard.integer(forKey: Self.concurrencyKey)
+        let initial = Self.concurrencyOptions.contains(stored) ? stored : 3
+        // init 里赋值不会触发 didSet，所以闸门上限要显式对齐一次。
+        self.maxConcurrent = initial
+        self.gate.limit = initial
+    }
 
     var activeCount: Int { jobs.filter { $0.state.isActive }.count }
+    var runningCount: Int { gate.running }
+    var waitingCount: Int { gate.waitingCount }
 
+    // MARK: - 提交
+
+    /// 支持一次粘贴多条分享文本：每行一条、或一整段里含多个链接都行。
     func submit(text: String) async {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            lastError = "先粘贴抖音分享文本或链接"
+        let urls = DouyinExtractor.allURLs(in: text)
+        guard !urls.isEmpty else {
+            lastError = "没找到链接，请粘贴抖音分享文本或链接"
             return
         }
 
@@ -26,55 +60,97 @@ final class ConversionService: ObservableObject {
         lastError = nil
         defer { isSubmitting = false }
 
-        var job = Job(id: UUID().uuidString, sourceText: trimmed)
-        job.fileName = "\(job.id).mp4"
-        jobs.insert(job, at: 0)
+        // 已在处理中的同一链接不再重复提交，避免并发下重复下载
+        var inFlight = Set(jobs.filter { $0.state.isActive }.map(\.sourceURL))
+        var added = 0
 
-        await process(job.id)
+        for url in urls {
+            let key = url.absoluteString
+            guard !inFlight.contains(key) else { continue }
+            inFlight.insert(key)
+
+            var job = Job(id: UUID().uuidString, sourceURL: key)
+            job.fileName = "\(job.id).mp4"
+            jobs.insert(job, at: 0)
+            gate.enqueue(job.id)
+            added += 1
+        }
+
+        if added == 0 {
+            lastError = "这些链接已经在处理中了"
+        }
+        pump()
     }
 
     func remove(jobID: String) {
+        gate.cancel(jobID)
         jobs.removeAll { $0.id == jobID }
     }
 
+    func clearFinished() {
+        jobs.removeAll { !$0.state.isActive }
+    }
+
+    /// 从资料库点某一首：以整库为队列，从这首开始播。
     func play(_ item: MediaItem) {
-        player.play(item: item, url: library.fileURL(for: item))
+        let items = library.items
+        let index = items.firstIndex { $0.id == item.id } ?? 0
+        player.play(items: items, startIndex: index)
         player.isExpanded = true
     }
 
-    // MARK: - 流水线
+    // MARK: - 并发调度
 
-    /// 逐个处理：抖音对并发请求敏感，顺序执行最稳。
-    private func process(_ jobID: String) async {
-        while isProcessing {
-            try? await Task.sleep(nanoseconds: 300_000_000)
+    private func pump() {
+        for jobID in gate.takeStartable() {
+            guard let index = jobs.firstIndex(where: { $0.id == jobID }), jobs[index].state == .queued else {
+                gate.finish()
+                continue
+            }
+            Task { [weak self] in
+                guard let self else { return }
+                await self.process(jobID)
+                self.gate.finish()
+                self.pump()
+            }
         }
-        isProcessing = true
-        defer { isProcessing = false }
+    }
 
-        guard let index = jobs.firstIndex(where: { $0.id == jobID }), let fileName = jobs[index].fileName else { return }
+    private func process(_ jobID: String) async {
+        guard
+            let index = jobs.firstIndex(where: { $0.id == jobID }),
+            let fileName = jobs[index].fileName,
+            let url = URL(string: jobs[index].sourceURL)
+        else { return }
+
         update(jobID) { job in
             job.state = .running
             job.stage = "解析链接"
             job.progress = 0.02
+            job.progressUnknown = false
+            job.downloadedBytes = 0
         }
 
         let destination = library.destination(for: jobID)
         do {
-            let result = try await extractor.fetchVideo(
-                shareText: jobs[index].sourceText,
-                to: destination
-            ) { [weak self] stage, progress in
+            let result = try await extractor.fetchVideo(url: url, to: destination) { [weak self] stage, progress in
                 Task { @MainActor in
                     self?.update(jobID) { job in
                         job.stage = stage
-                        job.progress = progress
+                        if let fraction = progress.fraction {
+                            job.progress = fraction
+                            job.progressUnknown = false
+                        } else {
+                            job.progressUnknown = true
+                        }
+                        if progress.bytesWritten > 0 {
+                            job.downloadedBytes = progress.bytesWritten
+                        }
                     }
                 }
             }
 
             if library.contains(videoID: result.videoID) {
-                // 同一个作品已存在：丢掉本次重复文件，指向已有条目
                 try? FileManager.default.removeItem(at: destination)
             } else {
                 await library.register(videoID: result.videoID, title: result.title, fileName: fileName)
@@ -85,6 +161,7 @@ final class ConversionService: ObservableObject {
                 job.state = .ready
                 job.stage = "已保存到手机"
                 job.progress = 1
+                job.progressUnknown = false
                 job.title = result.title
                 job.videoID = result.videoID
                 job.sizeBytes = item?.sizeBytes

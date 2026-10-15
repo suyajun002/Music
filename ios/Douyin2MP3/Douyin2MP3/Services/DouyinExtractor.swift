@@ -2,6 +2,17 @@
 // 逻辑与 ~/.agents/skills/douyin-skill/scripts/douyin-dl.mjs 保持一致；接口调整时两边都要改。
 import Foundation
 
+/// 诊断开关：`D2M_DEBUG=1` 时把取流关键量打到 stdout，
+/// 便于用 `devicectl device process launch --console` 在真机上看请求/下载细节。默认关闭。
+enum DouyinDebug {
+    static let enabled = ProcessInfo.processInfo.environment["D2M_DEBUG"] == "1"
+
+    static func log(_ message: @autoclosure () -> String) {
+        guard enabled else { return }
+        print("[d2m] \(message())")
+    }
+}
+
 enum DouyinError: LocalizedError {
     case linkFormat
     case shortLinkFailed
@@ -30,6 +41,27 @@ struct ExtractedVideo {
     let imageCount: Int
 }
 
+/// 取流进度。`fraction` 为 nil 表示服务器没给总大小（CDN 走 chunked），
+/// 这时只报已下载字节，由上层按「大小未知」渲染，而不是假装卡在某个百分比。
+struct FetchProgress {
+    var fraction: Double?
+    var bytesWritten: Int64 = 0
+
+    static func at(_ fraction: Double) -> FetchProgress {
+        FetchProgress(fraction: fraction, bytesWritten: 0)
+    }
+
+    /// 由下载字节换算进度：服务器给了总大小就给比例（0…1），
+    /// chunked 没给总大小就只有字节数，`fraction` 为 nil。
+    static func fromBytes(totalWritten: Int64, expected: Int64) -> FetchProgress {
+        guard expected > 0 else {
+            return FetchProgress(fraction: nil, bytesWritten: max(totalWritten, 0))
+        }
+        let ratio = Double(totalWritten) / Double(expected)
+        return FetchProgress(fraction: min(max(ratio, 0), 1), bytesWritten: totalWritten)
+    }
+}
+
 /// 取流所需的全部请求参数集中在这里，便于接口变化时统一调整。
 struct DouyinConfig {
     var mobileUserAgent =
@@ -39,11 +71,16 @@ struct DouyinConfig {
     var clarityCandidates = ["1080p", "720p", "540p"]
     var requestTimeout: TimeInterval = 60
     var downloadTimeout: TimeInterval = 600
+    /// 并发下载时复用凭证，避免每个任务都去打一次 ttwid
+    var cookieRefreshInterval: TimeInterval = 300
+    /// 壳页（风控）重试次数
+    var shareRetryCount = 1
 }
 
 actor DouyinExtractor {
     private let config: DouyinConfig
     private var cookieJar: [String: String] = [:]
+    private var lastCookieRefresh: Date?
 
     private let noRedirect = NoRedirectSession()
     private let session: URLSession = {
@@ -64,17 +101,28 @@ actor DouyinExtractor {
     func fetchVideo(
         shareText: String,
         to destination: URL,
-        onStage: @Sendable @escaping (String, Double) -> Void
+        onStage: @Sendable @escaping (String, FetchProgress) -> Void
     ) async throws -> ExtractedVideo {
-        onStage("解析链接", 0.05)
-        let videoID = try await resolveVideoID(from: shareText)
+        guard let url = Self.allURLs(in: shareText).first else { throw DouyinError.linkFormat }
+        return try await fetchVideo(url: url, to: destination, onStage: onStage)
+    }
 
-        onStage("获取访问凭证", 0.10)
+    func fetchVideo(
+        url: URL,
+        to destination: URL,
+        onStage: @Sendable @escaping (String, FetchProgress) -> Void
+    ) async throws -> ExtractedVideo {
+        onStage("解析链接", .at(0.05))
+        let videoID = try await resolveVideoID(from: url)
+        DouyinDebug.log("作品 ID \(videoID)")
+
+        onStage("获取访问凭证", .at(0.10))
         await refreshCookies()
 
-        onStage("解析作品信息", 0.16)
+        onStage("解析作品信息", .at(0.16))
         let html = try await fetchShareHTML(videoID: videoID)
         let parsed = parseShareHTML(html)
+        DouyinDebug.log("share 页 \(html.count) 字节，uri=\(parsed.uri ?? "nil")，images=\(parsed.images.count)")
 
         if parsed.uri == nil {
             if !parsed.images.isEmpty { throw DouyinError.imageOnly }
@@ -82,12 +130,19 @@ actor DouyinExtractor {
         }
         guard let uri = parsed.uri else { throw DouyinError.noVideoData }
 
-        onStage("下载视频", 0.25)
-        try await downloadFirstAvailable(uri: uri, to: destination) { ratio in
-            onStage("下载视频", 0.25 + ratio * 0.7)
+        onStage("下载视频", .at(0.25))
+        try await downloadFirstAvailable(uri: uri, to: destination) { progress in
+            guard let fraction = progress.fraction else {
+                onStage("下载视频", progress)
+                return
+            }
+            onStage("下载视频", FetchProgress(
+                fraction: 0.25 + fraction * 0.7,
+                bytesWritten: progress.bytesWritten
+            ))
         }
 
-        onStage("保存到手机", 0.98)
+        onStage("保存到手机", .at(0.98))
         return ExtractedVideo(videoID: videoID, title: parsed.desc, imageCount: parsed.images.count)
     }
 
@@ -95,8 +150,13 @@ actor DouyinExtractor {
 
     func resolveVideoID(from shareText: String) async throws -> String {
         let firstURL = try Self.firstURL(in: shareText)
+        return try await resolveVideoID(from: firstURL)
+    }
+
+    func resolveVideoID(from firstURL: URL) async throws -> String {
+        let isShortLink = firstURL.host?.contains("v.douyin.com") == true
         let resolved: URL
-        if firstURL.host?.contains("v.douyin.com") == true {
+        if isShortLink {
             guard
                 let location = try await redirectLocation(
                     url: firstURL,
@@ -117,30 +177,43 @@ actor DouyinExtractor {
         }
 
         let last = resolved.path.split(separator: "/").last.map(String.init) ?? ""
-        guard !last.isEmpty else { throw DouyinError.linkFormat }
+        // 短链已跳转但没有作品 ID，说明链接本身失效，不要误报「没找到链接」。
+        guard !last.isEmpty else { throw isShortLink ? DouyinError.shortLinkFailed : DouyinError.linkFormat }
         return last
     }
 
-    /// 从分享文本里抠出第一个 https 链接，并去掉结尾的中文标点。
-    static func firstURL(in text: String) throws -> URL {
+    /// 抠出文本里所有 https 链接（去重、去掉结尾中文标点），支持一次粘贴多条分享文本。
+    static func allURLs(in text: String) -> [URL] {
         let pattern = "https://[^\\s]+"
-        guard
-            let regex = try? NSRegularExpression(pattern: pattern),
-            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-            let range = Range(match.range, in: text)
-        else { throw DouyinError.linkFormat }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
 
-        var raw = String(text[range])
-        while let last = raw.last, "，。；;、".contains(last) {
-            raw.removeLast()
+        var urls: [URL] = []
+        for match in matches {
+            guard let range = Range(match.range, in: text) else { continue }
+            var raw = String(text[range])
+            while let last = raw.last, "，。；;、".contains(last) {
+                raw.removeLast()
+            }
+            guard let url = URL(string: raw), !urls.contains(url) else { continue }
+            urls.append(url)
         }
-        guard let url = URL(string: raw) else { throw DouyinError.linkFormat }
+        return urls
+    }
+
+    /// 兼容旧调用：取第一条链接。
+    static func firstURL(in text: String) throws -> URL {
+        guard let url = allURLs(in: text).first else { throw DouyinError.linkFormat }
         return url
     }
 
     // MARK: - 反爬 Cookie
 
-    private func refreshCookies() async {
+    private func refreshCookies(force: Bool = false) async {
+        if !force, !cookieJar.isEmpty, let last = lastCookieRefresh,
+           Date().timeIntervalSince(last) < config.cookieRefreshInterval {
+            return
+        }
         // 1. 首页基础 Cookie（失败不致命）
         if let url = URL(string: "https://www.douyin.com/") {
             var request = URLRequest(url: url)
@@ -171,6 +244,8 @@ actor DouyinExtractor {
         if let (data, response) = try? await session.data(for: request) {
             storeCookies(from: response, url: url, body: data)
         }
+        lastCookieRefresh = Date()
+        DouyinDebug.log("Cookie 刷新完成，共 \(cookieJar.count) 项")
     }
 
     /// 同时解析响应头里的 Set-Cookie 与 URLSession Cookie 存储，尽量贴近脚本的 Cookie 池行为。
@@ -191,6 +266,19 @@ actor DouyinExtractor {
     // MARK: - share 页
 
     private func fetchShareHTML(videoID: String) async throws -> String {
+        for attempt in 0...config.shareRetryCount {
+            do {
+                return try await fetchShareHTMLOnce(videoID: videoID)
+            } catch {
+                guard attempt < config.shareRetryCount else { throw error }
+                // 并发下载时可能被风控降级，刷新凭证后再试一次
+                await refreshCookies(force: true)
+            }
+        }
+        throw DouyinError.shellPage
+    }
+
+    private func fetchShareHTMLOnce(videoID: String) async throws -> String {
         let candidates = [
             "https://www.iesdouyin.com/share/video/\(videoID)/",
             "https://www.iesdouyin.com/share/note/\(videoID)/",
@@ -345,16 +433,18 @@ actor DouyinExtractor {
     private func downloadFirstAvailable(
         uri: String,
         to destination: URL,
-        onProgress: @Sendable @escaping (Double) -> Void
+        onProgress: @Sendable @escaping (FetchProgress) -> Void
     ) async throws {
         var lastError: Error = DouyinError.downloadRejected("所有清晰度均失败")
 
         for ratio in config.clarityCandidates {
             do {
                 let cdn = try await cdnURL(uri: uri, ratio: ratio)
+                DouyinDebug.log("清晰度 \(ratio) → \(cdn.host ?? "-")")
                 try await download(cdn: cdn, to: destination, onProgress: onProgress)
                 return
             } catch {
+                DouyinDebug.log("清晰度 \(ratio) 失败：\(error.localizedDescription)")
                 lastError = error
             }
         }
@@ -365,7 +455,7 @@ actor DouyinExtractor {
     private func download(
         cdn: URL,
         to destination: URL,
-        onProgress: @Sendable @escaping (Double) -> Void
+        onProgress: @Sendable @escaping (FetchProgress) -> Void
     ) async throws {
         var request = URLRequest(url: cdn)
         request.setValue(config.mobileUserAgent, forHTTPHeaderField: "User-Agent")
@@ -441,10 +531,11 @@ private final class NoRedirectSession: NSObject, URLSessionTaskDelegate, @unchec
 }
 
 /// 下载进度回调：把字节进度交给上层显示。
-private final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    private let onProgress: @Sendable (Double) -> Void
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let onProgress: @Sendable (FetchProgress) -> Void
+    private var lastLoggedMB: Int64 = -1
 
-    init(onProgress: @escaping @Sendable (Double) -> Void) {
+    init(onProgress: @escaping @Sendable (FetchProgress) -> Void) {
         self.onProgress = onProgress
     }
 
@@ -455,7 +546,20 @@ private final class DownloadProgressDelegate: NSObject, URLSessionTaskDelegate, 
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        let progress = FetchProgress.fromBytes(totalWritten: totalBytesWritten, expected: totalBytesExpectedToWrite)
+        let mb = totalBytesWritten / 1_048_576
+        if mb != lastLoggedMB {
+            lastLoggedMB = mb
+            DouyinDebug.log("下载 written=\(totalBytesWritten)B expected=\(totalBytesExpectedToWrite)B fraction=\(progress.fraction.map { String(format: "%.3f", $0) } ?? "nil")")
+        }
+        onProgress(progress)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        DouyinDebug.log("下载完成 → \(location.path)")
     }
 }

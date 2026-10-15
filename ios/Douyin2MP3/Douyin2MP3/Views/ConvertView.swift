@@ -16,7 +16,7 @@ struct ConvertView: View {
                         .focused($inputFocused)
                         .overlay(alignment: .topLeading) {
                             if input.isEmpty {
-                                Text("粘贴抖音分享文本或链接")
+                                Text("粘贴抖音分享文本或链接（可一次粘多条，每行一条）")
                                     .foregroundStyle(.secondary)
                                     .padding(.top, 8)
                                     .padding(.leading, 5)
@@ -39,12 +39,12 @@ struct ConvertView: View {
                         let text = input
                         Task {
                             await service.submit(text: text)
-                            if service.jobs.first?.state == .ready { input = "" }
+                            if service.lastError == nil { input = "" }
                         }
                     } label: {
                         HStack {
                             if service.isSubmitting { ProgressView().tint(.white) }
-                            Text(service.isSubmitting ? "正在处理" : "下载到手机")
+                            Text(service.isSubmitting ? "正在提交" : "下载到手机")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -54,7 +54,7 @@ struct ConvertView: View {
                 } header: {
                     Text("抖音链接")
                 } footer: {
-                    Text("全程在手机上完成：解析、下载无水印视频、保存到本地。锁屏和后台都能继续播放。")
+                    Text("全程在手机上完成：解析、下载无水印视频、保存到本地。完成后会出现在「资料库」，锁屏和后台都能继续播放。")
                 }
 
                 if let error = service.lastError {
@@ -64,17 +64,50 @@ struct ConvertView: View {
                 }
 
                 if !service.jobs.isEmpty {
-                    Section("任务") {
+                    Section {
                         ForEach(service.jobs) { job in
                             JobRow(job: job)
                         }
                         .onDelete { offsets in
                             for index in offsets { service.remove(jobID: service.jobs[index].id) }
                         }
+                    } header: {
+                        HStack {
+                            Text("转换记录")
+                            Spacer()
+                            if service.activeCount > 0 {
+                                Text("进行中 \(service.runningCount) · 等待 \(service.waitingCount)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } footer: {
+                        if !service.jobs.contains(where: { !$0.state.isActive }) {
+                            EmptyView()
+                        } else {
+                            Button("清除已完成") { service.clearFinished() }
+                                .font(.caption)
+                        }
                     }
                 }
             }
-            .navigationTitle("抖音转视频")
+            .navigationTitle("转视频")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Picker("同时下载", selection: Binding(
+                            get: { service.maxConcurrent },
+                            set: { service.maxConcurrent = $0 }
+                        )) {
+                            ForEach(ConversionService.concurrencyOptions, id: \.self) { count in
+                                Text("\(count) 个").tag(count)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "square.stack.3d.down.right")
+                    }
+                }
+            }
         }
     }
 }
@@ -103,8 +136,14 @@ private struct JobRow: View {
             }
 
             if job.state.isActive {
-                ProgressView(value: job.progress)
-                    .progressViewStyle(.linear)
+                if job.progressUnknown {
+                    // 服务器没给总大小：走不确定进度条，避免停在某个假百分比
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView(value: job.progress)
+                        .progressViewStyle(.linear)
+                }
             }
 
             if job.state == .ready, let videoID = job.videoID,
@@ -148,7 +187,12 @@ private struct JobRow: View {
 
     private var statusText: String {
         if job.state == .failed { return job.error ?? "下载失败" }
-        if job.state == .running { return "\(job.stage) \(Int(job.progress * 100))%" }
+        if job.state == .running {
+            if job.progressUnknown {
+                return "\(job.stage) · 已下载 \(job.downloadedText)"
+            }
+            return "\(job.stage) \(Int(job.progress * 100))%"
+        }
         return job.stage
     }
 }
