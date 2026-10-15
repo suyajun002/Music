@@ -1,14 +1,25 @@
 // 用途：App 状态中枢。一次可提交多条链接，按可配置的并发数并行下载，逐条落库。
 import Foundation
 
+/// 一次提交的结构化结果。界面只据此显示一行结论，不自己解析文本、不做判断。
+struct SubmitOutcome: Equatable {
+    /// 新入队、开始下载的条数。
+    var queued = 0
+    /// 已经在资料库里、这次跳过的条数。
+    var downloaded = 0
+    /// 已经在下载中、这次跳过的条数。
+    var running = 0
+
+    /// 文本里是否识别到了链接（全为 0 表示没识别到）。
+    var hasLink: Bool { queued + downloaded + running > 0 }
+}
+
 @MainActor
 final class ConversionService: ObservableObject {
     static let concurrencyOptions = [1, 2, 3, 4, 6]
     private static let concurrencyKey = "conversion.maxConcurrent"
 
     @Published private(set) var jobs: [Job] = []
-    @Published var lastError: String?
-    @Published var isSubmitting = false
 
     /// 并行下载数：用户可调并持久化，改完立刻重新调度。
     @Published var maxConcurrent: Int {
@@ -52,38 +63,48 @@ final class ConversionService: ObservableObject {
 
     // MARK: - 提交
 
-    /// 支持一次粘贴多条分享文本：每行一条、或一整段里含多个链接都行。
-    func submit(text: String) async {
-        let urls = DouyinExtractor.allURLs(in: text)
-        guard !urls.isEmpty else {
-            lastError = "没找到链接，请粘贴抖音分享文本或链接"
-            return
-        }
+    /// 「粘贴即自动下载」入口：界面把文本原样交进来，识别与去重都在这里判断。
+    @discardableResult
+    func autoSubmit(from text: String) async -> SubmitOutcome {
+        await enqueue(from: text)
+    }
 
-        isSubmitting = true
-        lastError = nil
-        defer { isSubmitting = false }
+    /// 解析文本里的链接并入队。支持一次粘多条：每行一条、或一整段里含多个链接都行。
+    /// 已经在下载中、或已经下过的链接直接跳过，不重复下载。
+    private func enqueue(from text: String) async -> SubmitOutcome {
+        let urls = DouyinExtractor.allURLs(in: text)
+        guard !urls.isEmpty else { return SubmitOutcome() }
 
         // 已在处理中的同一链接不再重复提交，避免并发下重复下载
         var inFlight = Set(jobs.filter { $0.state.isActive }.map(\.sourceURL))
-        var added = 0
+        var seenInBatch = Set<String>()
+        var outcome = SubmitOutcome()
 
         for url in urls {
             let key = url.absoluteString
-            guard !inFlight.contains(key) else { continue }
+            // 同一批里重复粘贴的同一条链接，静默去重
+            guard seenInBatch.insert(key).inserted else { continue }
+
+            if inFlight.contains(key) {
+                outcome.running += 1
+                continue
+            }
+            // 已经下载并入库的不再重复下载
+            if library.contains(sourceURL: key) {
+                outcome.downloaded += 1
+                continue
+            }
             inFlight.insert(key)
 
             var job = Job(id: UUID().uuidString, sourceURL: key)
             job.fileName = "\(job.id).mp4"
             jobs.insert(job, at: 0)
             gate.enqueue(job.id)
-            added += 1
+            outcome.queued += 1
         }
 
-        if added == 0 {
-            lastError = "这些链接已经在处理中了"
-        }
         pump()
+        return outcome
     }
 
     func remove(jobID: String) {
@@ -160,7 +181,12 @@ final class ConversionService: ObservableObject {
             if library.contains(videoID: result.videoID) {
                 try? FileManager.default.removeItem(at: destination)
             } else {
-                await library.register(videoID: result.videoID, title: result.title, fileName: fileName)
+                await library.register(
+                    videoID: result.videoID,
+                    title: result.title,
+                    fileName: fileName,
+                    sourceURL: url.absoluteString
+                )
             }
 
             let item = library.items.first { $0.id == result.videoID }

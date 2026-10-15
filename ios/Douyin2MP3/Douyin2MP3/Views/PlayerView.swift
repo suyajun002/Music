@@ -3,9 +3,8 @@ import SwiftUI
 
 struct PlayerView: View {
     @EnvironmentObject private var service: ConversionService
+    @EnvironmentObject private var player: MediaPlayer
     @Environment(\.dismiss) private var dismiss
-
-    private var player: MediaPlayer { service.player }
 
     private var item: MediaItem? {
         guard let id = player.currentID else { return nil }
@@ -81,7 +80,7 @@ struct PlayerView: View {
             Text(player.currentTitle)
                 .font(.title3.weight(.semibold))
                 .lineLimit(1)
-            Text("抖音")
+            Text(item?.subtitle ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

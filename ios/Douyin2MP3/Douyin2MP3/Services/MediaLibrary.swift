@@ -37,8 +37,13 @@ final class MediaLibrary: ObservableObject {
         items.contains { $0.id == videoID }
     }
 
+    /// 这条来源链接是否已经下载入库（「粘贴即下载」用它跳过重复）。
+    func contains(sourceURL: String) -> Bool {
+        items.contains { $0.sourceURL == sourceURL }
+    }
+
     /// 入库：抽首帧做封面，读时长，写索引。
-    func register(videoID: String, title: String?, fileName: String) async {
+    func register(videoID: String, title: String?, fileName: String, sourceURL: String?) async {
         if contains(videoID: videoID) { return }
         let url = directory.appendingPathComponent(fileName)
         let artworkName = await Self.makeArtwork(from: url, directory: directory, id: videoID)
@@ -46,12 +51,13 @@ final class MediaLibrary: ObservableObject {
 
         let item = MediaItem(
             id: videoID,
-            title: title?.isEmpty == false ? title! : "抖音视频",
+            title: title?.isEmpty == false ? title! : "未命名音频",
             fileName: fileName,
             artworkFileName: artworkName,
             sizeBytes: size,
             durationSec: await Self.duration(of: url),
-            savedAt: Date()
+            savedAt: Date(),
+            sourceURL: sourceURL
         )
         items.insert(item, at: 0)
         persist()
@@ -103,6 +109,20 @@ final class MediaLibrary: ObservableObject {
             let decoded = try? JSONDecoder().decode([MediaItem].self, from: data)
         else { return }
         items = decoded.filter { fileManager.fileExists(atPath: fileURL(for: $0).path) }
+        migrateTitles()
+    }
+
+    /// 老版本取流时标题没解转义（会显示成「开车\u002F健身」），这里就地修一次并回写，
+    /// 省得为了一个标题去重下整条视频。修不动就原样保留。
+    private func migrateTitles() {
+        var changed = false
+        for index in items.indices {
+            let fixed = JSONEscapes.decode(items[index].title)
+            guard fixed != items[index].title else { continue }
+            items[index].title = fixed
+            changed = true
+        }
+        if changed { persist() }
     }
 
     private func persist() {

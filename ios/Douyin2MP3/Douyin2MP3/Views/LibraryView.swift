@@ -10,6 +10,7 @@ struct LibraryView: View {
     }
 
     @EnvironmentObject private var service: ConversionService
+    @EnvironmentObject private var player: MediaPlayer
     @State private var query = ""
     @State private var sort: SortOrder = .recent
 
@@ -31,7 +32,7 @@ struct LibraryView: View {
                     ContentUnavailableView(
                         "资料库是空的",
                         systemImage: "music.note.list",
-                        description: Text("到「转视频」里贴一条抖音链接，下载好会自动出现在这里")
+                        description: Text("到「转视频」里贴一条链接，下载好会自动出现在这里")
                     )
                 } else {
                     List {
@@ -80,7 +81,7 @@ struct LibraryView: View {
                         .font(.body)
                         .foregroundStyle(isCurrent(item) ? Color.accentColor : .primary)
                         .lineLimit(1)
-                    Text("抖音 · \(item.durationText)")
+                    Text(item.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -88,7 +89,7 @@ struct LibraryView: View {
 
                 Spacer(minLength: 8)
 
-                if isCurrent(item), service.player.isPlaying {
+                if isCurrent(item), player.isPlaying {
                     Image(systemName: "waveform")
                         .foregroundStyle(.tint)
                         .symbolEffect(.variableColor.iterative, options: .repeating)
@@ -99,7 +100,7 @@ struct LibraryView: View {
     }
 
     private func isCurrent(_ item: MediaItem) -> Bool {
-        service.player.currentID == item.id
+        player.currentID == item.id
     }
 
     private var totalText: String {

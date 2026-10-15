@@ -28,7 +28,7 @@ struct Job: Identifiable, Equatable {
 
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
-        return "抖音视频"
+        return "未命名音频"
     }
 
     var sizeText: String {
@@ -49,6 +49,9 @@ struct MediaItem: Codable, Identifiable, Equatable {
     var sizeBytes: Int?
     var durationSec: Double?
     var savedAt: Date
+    /// 来源链接。用于「粘贴即下载」时判断这条是否已经下过，避免重复下载。
+    /// 老索引里没有这个字段，解码为 nil，只是无法参与去重。
+    var sourceURL: String?
 
     var durationText: String {
         guard let durationSec, durationSec > 0 else { return "--:--" }
@@ -60,4 +63,7 @@ struct MediaItem: Codable, Identifiable, Equatable {
         guard let sizeBytes else { return "" }
         return String(format: "%.1f MB", Double(sizeBytes) / 1024 / 1024)
     }
+
+    /// 列表、迷你播放条、全屏播放页共用的副标题口径，避免三处各写一份漂移。
+    var subtitle: String { durationText }
 }

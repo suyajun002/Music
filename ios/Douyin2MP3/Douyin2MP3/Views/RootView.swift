@@ -3,33 +3,41 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var service: ConversionService
+    @EnvironmentObject private var player: MediaPlayer
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TabView {
-            LibraryView()
-                .tabItem { Label("资料库", systemImage: "music.note.list") }
-            ConvertView()
-                .tabItem { Label("转视频", systemImage: "arrow.down.circle") }
-        }
-        .safeAreaInset(edge: .bottom) {
-            PlayerBar()
-        }
+        tabs
         .sheet(isPresented: Binding(
-            get: { service.player.isExpanded },
-            set: { service.player.isExpanded = $0 }
+            get: { player.isExpanded },
+            set: { player.isExpanded = $0 }
         )) {
             PlayerView().environmentObject(service)
+                .environmentObject(player)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                service.player.showsVideo = true
+                player.showsVideo = true
             case .background:
                 // 摘掉视频图层，改为纯音频播放，避免被系统挂起
-                service.player.showsVideo = false
+                player.showsVideo = false
             default:
                 break
+            }
+        }
+    }
+
+    /// 迷你播放条挂在「每个页面的底部安全区」里：
+    /// 位置正好在页签栏上方（不会盖住页签栏），没有播放内容时高度自动塌成 0。
+    /// 注意不要用 tabViewBottomAccessory——即使内容为空，它也会留一条空白槽。
+    private var tabs: some View {
+        TabView {
+            Tab("资料库", systemImage: "music.note.list") {
+                LibraryView().miniPlayerInset()
+            }
+            Tab("转视频", systemImage: "arrow.down.circle") {
+                ConvertView().miniPlayerInset()
             }
         }
     }

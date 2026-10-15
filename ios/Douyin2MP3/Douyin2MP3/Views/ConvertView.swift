@@ -1,10 +1,11 @@
-// 用途：主页面。粘贴 → 转换 → 播放；任务卡片只显示「当前结论 + 一句话原因 + 动作」。
+// 用途：主页面。粘贴即自动下载；任务卡片只显示「当前结论 + 一句话原因 + 动作」。
 import SwiftUI
 import UIKit
 
 struct ConvertView: View {
     @EnvironmentObject private var service: ConversionService
     @State private var input = ""
+    @State private var outcome: SubmitOutcome?
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -16,7 +17,7 @@ struct ConvertView: View {
                         .focused($inputFocused)
                         .overlay(alignment: .topLeading) {
                             if input.isEmpty {
-                                Text("粘贴抖音分享文本或链接（可一次粘多条，每行一条）")
+                                Text("粘贴分享文本或链接（可一次粘多条，每行一条）")
                                     .foregroundStyle(.secondary)
                                     .padding(.top, 8)
                                     .padding(.leading, 5)
@@ -25,42 +26,27 @@ struct ConvertView: View {
                         }
 
                     HStack {
-                        Button("粘贴", systemImage: "doc.on.clipboard") {
+                        Button("粘贴链接", systemImage: "doc.on.clipboard") {
                             if let text = UIPasteboard.general.string { input = text }
                         }
                         Spacer()
-                        Button("清空") { input = "" }
+                        Button("清空") {
+                            input = ""
+                            outcome = nil
+                        }
                             .foregroundStyle(.secondary)
                     }
                     .font(.subheadline)
 
-                    Button {
-                        inputFocused = false
-                        let text = input
-                        Task {
-                            await service.submit(text: text)
-                            if service.lastError == nil { input = "" }
-                        }
-                    } label: {
-                        HStack {
-                            if service.isSubmitting { ProgressView().tint(.white) }
-                            Text(service.isSubmitting ? "正在提交" : "下载到手机")
-                                .fontWeight(.semibold)
-                        }
-                        .frame(maxWidth: .infinity)
+                    if let notice {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(outcome?.hasLink == true ? Color.secondary : Color.red)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(service.isSubmitting)
                 } header: {
-                    Text("抖音链接")
+                    Text("链接")
                 } footer: {
-                    Text("全程在手机上完成：解析、下载无水印视频、保存到本地。完成后会出现在「资料库」，锁屏和后台都能继续播放。")
-                }
-
-                if let error = service.lastError {
-                    Section {
-                        Text(error).foregroundStyle(.red).font(.subheadline)
-                    }
+                    Text("粘贴后自动开始下载，全程在手机上完成，完成后会出现在「资料库」。已经在资料库里的不会重复下载，锁屏和后台都能继续播放。")
                 }
 
                 if !service.jobs.isEmpty {
@@ -92,6 +78,9 @@ struct ConvertView: View {
                 }
             }
             .navigationTitle("转视频")
+            // 点空白/滚动就收起键盘，不该把人一直困在键盘页
+            .scrollDismissesKeyboard(.immediately)
+            .task(id: input) { await submitPasted() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -110,10 +99,38 @@ struct ConvertView: View {
             }
         }
     }
+
+    /// 把结构化结果翻成一行结论，页面只展示结论、不做判断。
+    private var notice: String? {
+        guard let outcome else { return nil }
+        guard outcome.hasLink else { return "没识别到链接，请粘贴完整的分享文本或链接" }
+        var parts: [String] = []
+        if outcome.queued > 0 { parts.append("已开始下载 \(outcome.queued) 条") }
+        if outcome.downloaded > 0 { parts.append("\(outcome.downloaded) 条已在资料库") }
+        if outcome.running > 0 { parts.append("\(outcome.running) 条正在下载") }
+        return parts.isEmpty ? nil : parts.joined(separator: "，")
+    }
+
+    /// 粘贴即下载：`.task(id:)` 在输入变化时重跑，天然形成「等粘贴落定」的防抖。
+    private func submitPasted() async {
+        guard !input.isEmpty else { return }
+        try? await Task.sleep(for: .milliseconds(450))
+        guard !Task.isCancelled else { return }
+
+        let result = await service.autoSubmit(from: input)
+        guard !Task.isCancelled else { return }
+        outcome = result
+
+        // 识别到链接就把输入框清掉，让用户直接看到下面开始跑的任务
+        guard result.hasLink else { return }
+        inputFocused = false
+        input = ""
+    }
 }
 
 private struct JobRow: View {
     @EnvironmentObject private var service: ConversionService
+    @EnvironmentObject private var player: MediaPlayer
     let job: Job
 
     var body: some View {
@@ -153,7 +170,7 @@ private struct JobRow: View {
                         service.play(item)
                     } label: {
                         Label(
-                            service.player.currentID == item.id && service.player.isPlaying ? "正在播放" : "播放",
+                            player.currentID == item.id && player.isPlaying ? "正在播放" : "播放",
                             systemImage: "play.fill"
                         )
                     }

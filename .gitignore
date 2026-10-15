@@ -1,3 +1,12 @@
+# Xcode / 构建产物（构建目录不进仓库，clone 后自己 build）
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# 本地依赖与日志
 node_modules/
 *.log
+
+# macOS
 .DS_Store

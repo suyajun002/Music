@@ -18,6 +18,8 @@ final class MediaPlayer: ObservableObject {
 
     let player = AVPlayer()
     private var timeObserver: Any?
+    /// 盯住 AVPlayer 的真实播放状态：暂停/播完/被系统中断都由它纠正按钮，避免图标和实际不符。
+    private var statusObservation: NSKeyValueObservation?
     private var queue: [MediaItem] = []
     private var index = 0
     private var artworkLoader: @MainActor (MediaItem) -> URL? = { _ in nil }
@@ -26,6 +28,7 @@ final class MediaPlayer: ObservableObject {
     init() {
         configureSession()
         addTimeObserver()
+        observePlaybackStatus()
         registerRemoteCommands()
     }
 
@@ -101,9 +104,12 @@ final class MediaPlayer: ObservableObject {
 
     func toggle() {
         guard currentID != nil else { return }
-        if isPlaying { player.pause() } else { player.play() }
-        isPlaying.toggle()
-        updateNowPlaying()
+        // 以播放器的真实状态为准，不看界面上的图标
+        if player.timeControlStatus == .playing {
+            player.pause()
+        } else {
+            player.play()
+        }
     }
 
     func seek(to ratio: Double) {
@@ -152,6 +158,24 @@ final class MediaPlayer: ObservableObject {
         }
     }
 
+    private func observePlaybackStatus() {
+        statusObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                switch player.timeControlStatus {
+                case .playing:
+                    self.isPlaying = true
+                case .paused:
+                    self.isPlaying = false
+                default:
+                    // waitingToPlayAtSpecifiedRate：只是在等待缓冲，先保持现状
+                    break
+                }
+                self.updateNowPlaying()
+            }
+        }
+    }
+
     private func registerRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in
@@ -186,7 +210,7 @@ final class MediaPlayer: ObservableObject {
         guard currentID != nil else { return }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: currentTitle,
-            MPMediaItemPropertyArtist: "抖音",
+            MPMediaItemPropertyArtist: "Music",
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
         ]

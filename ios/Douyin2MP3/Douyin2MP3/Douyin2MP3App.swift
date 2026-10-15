@@ -21,7 +21,11 @@ struct Douyin2MP3App: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView().environmentObject(service)
+            RootView()
+                .environmentObject(service)
+                // 播放器单独注入：视图要观察播放状态本身，只观察 ConversionService 时
+                // 播放/暂停图标不会随播放器状态刷新。
+                .environmentObject(service.player)
         }
     }
 }

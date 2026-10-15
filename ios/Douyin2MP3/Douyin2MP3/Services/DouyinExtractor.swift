@@ -1,5 +1,5 @@
-// 用途：在手机上完成抖音取流全链路（短链解析 → ttwid 凭证 → share 页解析 → CDN 直链 → 无水印下载）。
-// 逻辑与 ~/.agents/skills/douyin-skill/scripts/douyin-dl.mjs 保持一致；接口调整时两边都要改。
+// 用途：在手机上完成取流全链路（短链解析 → ttwid 凭证 → share 页解析 → CDN 直链 → 无水印下载）。
+// 取流逻辑集中在本文件；接口调整时只改这里的 DouyinConfig 与各解析方法。
 import Foundation
 
 /// 诊断开关：`D2M_DEBUG=1` 时把取流关键量打到 stdout，
@@ -24,9 +24,9 @@ enum DouyinError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .linkFormat: return "没找到链接，请粘贴抖音分享文本或链接"
-        case .shortLinkFailed: return "抖音短链接解析失败，链接可能已失效"
-        case .shellPage: return "抖音返回了空壳页面（风控或接口已调整），稍后重试"
+        case .linkFormat: return "没找到链接，请粘贴分享文本或链接"
+        case .shortLinkFailed: return "短链接解析失败，链接可能已失效"
+        case .shellPage: return "服务端返回了空壳页面（风控或接口已调整），稍后重试"
         case .noVideoData: return "这条作品没有可下载的视频数据"
         case .imageOnly: return "这是图文作品，没有视频"
         case .playRejected(let detail): return "获取视频直链失败：\(detail)"
@@ -329,7 +329,7 @@ actor DouyinExtractor {
 
         var desc: String?
         if let raw = Self.firstMatch(#""desc":"((?:[^"\\]|\\.)*)""#, in: html) {
-            desc = Self.unescapeJSONString(raw) ?? raw
+            desc = JSONEscapes.decode(raw)
         }
 
         return ParsedShare(uri: uri, images: images, desc: desc)
@@ -413,10 +413,6 @@ actor DouyinExtractor {
         return String(text[range])
     }
 
-    private static func unescapeJSONString(_ raw: String) -> String? {
-        guard let data = "\"\(raw)\"".data(using: .utf8) else { return nil }
-        return try? JSONSerialization.jsonObject(with: data) as? String
-    }
 
     // MARK: - 换取 CDN 直链并下载
 

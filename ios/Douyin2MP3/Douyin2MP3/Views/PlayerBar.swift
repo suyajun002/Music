@@ -3,8 +3,7 @@ import SwiftUI
 
 struct PlayerBar: View {
     @EnvironmentObject private var service: ConversionService
-
-    private var player: MediaPlayer { service.player }
+    @EnvironmentObject private var player: MediaPlayer
 
     var body: some View {
         if let id = player.currentID, let item = service.library.items.first(where: { $0.id == id }) {
@@ -17,7 +16,7 @@ struct PlayerBar: View {
                         Text(player.currentTitle)
                             .font(.subheadline)
                             .lineLimit(1)
-                        Text("抖音")
+                        Text(item.subtitle)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -50,5 +49,12 @@ struct PlayerBar: View {
             }
             .background(.bar)
         }
+    }
+}
+
+extension View {
+    /// 把迷你播放条钉在页签栏上方；无播放内容时不占高度。
+    func miniPlayerInset() -> some View {
+        safeAreaInset(edge: .bottom) { PlayerBar() }
     }
 }
