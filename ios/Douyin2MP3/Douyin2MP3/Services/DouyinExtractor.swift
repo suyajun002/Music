@@ -69,11 +69,11 @@ struct DouyinConfig {
     var desktopUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     var clarityCandidates = ["1080p", "720p", "540p"]
+    /// CDN 线路：同一条视频换 line 会命中不同边缘节点；手机侧某个节点连不上时换线比重试同一地址有用。
+    var lineCandidates = [0, 1, 2]
     var requestTimeout: TimeInterval = 60
     /// 下载空闲上限：超过这么久没有新数据就断开重试，避免连接卡死后一停停十分钟。
     var downloadIdleTimeout: TimeInterval = 30
-    /// 单条清晰度的下载重试次数（CDN 时常直接 reset 连接，报 network connection was lost）
-    var downloadRetryCount = 3
     /// 并发下载时复用凭证，避免每个任务都去打一次 ttwid
     var cookieRefreshInterval: TimeInterval = 300
     /// 壳页（风控）重试次数
@@ -89,8 +89,6 @@ actor DouyinExtractor {
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
-        // 手机网络抖动时先等回连，而不是立刻报 network connection was lost
-        configuration.waitsForConnectivity = true
         // 整体上限，避免超大文件（几百 MB）被默认 7 天兜底无限挂着
         configuration.timeoutIntervalForResource = 1800
         configuration.httpCookieAcceptPolicy = .always
@@ -420,9 +418,9 @@ actor DouyinExtractor {
 
     // MARK: - 换取 CDN 直链并下载
 
-    private func cdnURL(uri: String, ratio: String) async throws -> URL {
+    private func cdnURL(uri: String, ratio: String, line: Int) async throws -> URL {
         guard
-            let url = URL(string: "https://aweme.snssdk.com/aweme/v1/play/?video_id=\(uri)&ratio=\(ratio)&line=0")
+            let url = URL(string: "https://aweme.snssdk.com/aweme/v1/play/?video_id=\(uri)&ratio=\(ratio)&line=\(line)")
         else { throw DouyinError.playRejected("地址拼装失败") }
 
         guard
@@ -432,27 +430,32 @@ actor DouyinExtractor {
                 referer: nil
             ),
             let cdn = URL(string: location)
-        else { throw DouyinError.playRejected("接口没有返回跳转（\(ratio)）") }
+        else { throw DouyinError.playRejected("接口没有返回跳转（\(ratio)/line\(line)）") }
 
         return cdn
     }
 
+    /// 逐个「清晰度 × 线路」组合尝试：任一组合成功即返回。
+    /// 坏一个边缘节点不影响整体；全部失败才把最后一个错误抛出。
     private func downloadFirstAvailable(
         uri: String,
         to destination: URL,
         onProgress: @Sendable @escaping (FetchProgress) -> Void
     ) async throws {
-        var lastError: Error = DouyinError.downloadRejected("所有清晰度均失败")
+        var lastError: Error = DouyinError.downloadRejected("所有清晰度和线路均失败")
 
         for ratio in config.clarityCandidates {
-            do {
-                let cdn = try await cdnURL(uri: uri, ratio: ratio)
-                DouyinDebug.log("清晰度 \(ratio) → \(cdn.host ?? "-")")
-                try await download(cdn: cdn, to: destination, onProgress: onProgress)
-                return
-            } catch {
-                DouyinDebug.log("清晰度 \(ratio) 失败：\(error.localizedDescription)")
-                lastError = error
+            for line in config.lineCandidates {
+                do {
+                    let cdn = try await cdnURL(uri: uri, ratio: ratio, line: line)
+                    DouyinDebug.log("试 \(ratio) line=\(line) → \(cdn.host ?? "-")")
+                    try await download(cdn: cdn, to: destination, onProgress: onProgress)
+                    DouyinDebug.log("\(ratio) line=\(line) 下载成功")
+                    return
+                } catch {
+                    DouyinDebug.log("\(ratio) line=\(line) 失败：\(error.localizedDescription)")
+                    lastError = error
+                }
             }
         }
 
@@ -460,40 +463,6 @@ actor DouyinExtractor {
     }
 
     private func download(
-        cdn: URL,
-        to destination: URL,
-        onProgress: @Sendable @escaping (FetchProgress) -> Void
-    ) async throws {
-        var lastError: Error = DouyinError.downloadRejected("下载失败")
-
-        for attempt in 1...config.downloadRetryCount {
-            do {
-                try await downloadOnce(cdn: cdn, to: destination, onProgress: onProgress)
-                return
-            } catch {
-                lastError = error
-                DouyinDebug.log("下载第 \(attempt)/\(config.downloadRetryCount) 次失败：\(error.localizedDescription)")
-                guard attempt < config.downloadRetryCount, Self.isTransient(error) else { throw error }
-                try? await Task.sleep(nanoseconds: UInt64(attempt) * 700_000_000)
-            }
-        }
-
-        throw lastError
-    }
-
-    /// 只对瞬时网络故障重试；403/地址错误这类确定性失败直接交给上层换清晰度。
-    static func isTransient(_ error: Error) -> Bool {
-        guard let urlError = error as? URLError else { return false }
-        switch urlError.code {
-        case .networkConnectionLost, .timedOut, .cannotConnectToHost, .cannotFindHost,
-             .dnsLookupFailed, .notConnectedToInternet, .secureConnectionFailed:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func downloadOnce(
         cdn: URL,
         to destination: URL,
         onProgress: @Sendable @escaping (FetchProgress) -> Void
