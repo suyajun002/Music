@@ -96,11 +96,12 @@ final class ConversionService: ObservableObject {
     }
 
     /// 从资料库点某一首：以整库为队列，从这首开始播。
+    /// 不自动展开全屏播放页——保持列表可见，只在底部出现迷你播放条；
+    /// 想看大封面/视频画面时再点迷你条展开（和音乐 App 的手感一致）。
     func play(_ item: MediaItem) {
         let items = library.items
         let index = items.firstIndex { $0.id == item.id } ?? 0
         player.play(items: items, startIndex: index)
-        player.isExpanded = true
     }
 
     // MARK: - 并发调度
