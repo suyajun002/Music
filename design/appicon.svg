@@ -1,32 +1,34 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0E0E18"/>
-      <stop offset="0.55" stop-color="#1A1030"/>
-      <stop offset="1" stop-color="#33165C"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#FFF3F8"/>
+      <stop offset="0.55" stop-color="#FFDCEA"/>
+      <stop offset="1" stop-color="#FFC3DA"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
-      <stop offset="0" stop-color="#4AD8FF" stop-opacity="0.30"/>
-      <stop offset="1" stop-color="#4AD8FF" stop-opacity="0"/>
+    <radialGradient id="glow" cx="0.5" cy="0.28" r="0.68">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
     </radialGradient>
+    <!-- userSpaceOnUse：所有部件共用同一渐变，拼接处无接缝 -->
+    <linearGradient id="note" gradientUnits="userSpaceOnUse" x1="230" y1="230" x2="760" y2="790">
+      <stop offset="0" stop-color="#7D1549"/>
+      <stop offset="1" stop-color="#380A2C"/>
+    </linearGradient>
   </defs>
 
+  <!-- 淡粉背景 -->
   <rect width="1024" height="1024" fill="url(#bg)"/>
   <rect width="1024" height="1024" fill="url(#glow)"/>
 
-  <!-- 播放三角：抖音双色错位 + 白色主体 -->
-  <g stroke-linejoin="round" stroke-width="46">
-    <path d="M404 322 L404 618 L666 470 Z" fill="#25F4EE" stroke="#25F4EE" transform="translate(-16,-12)"/>
-    <path d="M404 322 L404 618 L666 470 Z" fill="#FE2C55" stroke="#FE2C55" transform="translate(16,12)"/>
-    <path d="M404 322 L404 618 L666 470 Z" fill="#FFFFFF" stroke="#FFFFFF"/>
-  </g>
-
-  <!-- 音频柱：呼应“音频”而不是“视频” -->
-  <g fill="#FFFFFF">
-    <rect x="372" y="742" width="40" height="86" rx="20" opacity="0.95"/>
-    <rect x="432" y="718" width="40" height="134" rx="20" fill="#25F4EE"/>
-    <rect x="492" y="694" width="40" height="182" rx="20" opacity="0.95"/>
-    <rect x="552" y="718" width="40" height="134" rx="20" fill="#FE2C55"/>
-    <rect x="612" y="742" width="40" height="86" rx="20" opacity="0.95"/>
+  <!-- Music 符号：连梁双八分音符 -->
+  <g fill="url(#note)" transform="translate(-100,-147) scale(1.28)">
+    <!-- 双符干（顶端藏进连梁里） -->
+    <rect x="314" y="355" width="58" height="327" rx="29"/>
+    <rect x="620" y="300" width="58" height="342" rx="29"/>
+    <!-- 连梁 -->
+    <path d="M314 317 L678 250 L678 316 L314 383 Z"/>
+    <!-- 符头 -->
+    <ellipse cx="330" cy="690" rx="110" ry="80" transform="rotate(-18 330 690)"/>
+    <ellipse cx="636" cy="634" rx="110" ry="80" transform="rotate(-18 636 634)"/>
   </g>
 </svg>
