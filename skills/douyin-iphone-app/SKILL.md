@@ -27,7 +27,7 @@ triggers:
 ## 项目位置
 
 - App 工程：`ios/Douyin2MP3`（SwiftUI，零第三方依赖；**显示名「Music」**，图标淡粉底 + 深莓色音符，见「命名与图标」）
-- 签名：工程里的 `DEVELOPMENT_TEAM` / bundle id 是原作者的值，**复用时必须换成自己的**，否则签名失败或与手机上已装 App 冲突
+- 签名：工程里**不含** `DEVELOPMENT_TEAM`（已清空），bundle id 是占位值 `com.example.douyin2mp3`。装真机必须自己配团队，或构建时用 `DEVELOPMENT_TEAM=<团队ID> PRODUCT_BUNDLE_IDENTIFIER=<自己的ID>` 从命令行传入 —— 个人值留在命令行、不写回仓库；只做编译校验加 `CODE_SIGNING_ALLOWED=NO`
 - 取流核心：`ios/Douyin2MP3/Douyin2MP3/Services/DouyinExtractor.swift`
 - 并发闸门：`Services/ConcurrencyGate.swift`（纯 Foundation，可命令行单测）
 - 播放：`Services/MediaPlayer.swift` + `Views/VideoSurface.swift`

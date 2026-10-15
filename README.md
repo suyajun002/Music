@@ -49,8 +49,8 @@ cd douyin2mp3
 open ios/Douyin2MP3/Douyin2MP3.xcodeproj
 ```
 
-1. **Signing & Capabilities** 里把 Team 换成你自己的 Apple ID —— 仓库里的 `DEVELOPMENT_TEAM` 是作者的，直接用会签名失败
-2. 建议把 bundle id 也改成自己的，例如 `com.yourname.douyin2mp3`（沿用原 id 会和你手机上同名 App 冲突）
+1. **Signing & Capabilities** 里选上你自己的 Apple ID 团队 —— 工程里**没有**签名团队，不选会签名失败
+2. 把 bundle id 从占位值 `com.example.douyin2mp3` 改成你自己的，例如 `com.yourname.douyin2mp3`
 3. 选中你的 iPhone，Run
 4. 首次运行要在手机上信任证书：**设置 → 通用 → VPN 与设备管理 → 开发者 App → 信任**
 
@@ -69,6 +69,19 @@ xcrun devicectl device process launch --device <UDID> com.yourname.douyin2mp3
 ```
 
 `devicectl` 安装和启动都要求手机**已解锁且亮屏**，否则报 `device was not, or could not be, unlocked`。
+
+不想把自己的团队 ID 和 bundle id 写进工程（避免提交个人配置），可以构建时从命令行传入，工程文件保持干净：
+
+```bash
+xcodebuild -project ios/Douyin2MP3/Douyin2MP3.xcodeproj -scheme Douyin2MP3 \
+  -destination 'generic/platform=iOS' -configuration Debug \
+  -allowProvisioningUpdates -derivedDataPath build \
+  DEVELOPMENT_TEAM=<你的团队ID> \
+  PRODUCT_BUNDLE_IDENTIFIER=com.yourname.douyin2mp3 \
+  build
+```
+
+只做编译校验（不签名、不装真机）时加 `CODE_SIGNING_ALLOWED=NO` 就能在没有团队的情况下编过。
 
 ## 取流原理
 
