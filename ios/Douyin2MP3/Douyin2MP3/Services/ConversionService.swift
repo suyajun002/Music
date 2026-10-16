@@ -14,12 +14,26 @@ struct SubmitOutcome: Equatable {
     var hasLink: Bool { queued + downloaded + running > 0 }
 }
 
+/// 从剪贴板里识别到的、**等用户确认**的一批链接。
+/// 自动下载会让人莫名其妙多出一首歌，所以识别到之后只弹确认框，用户点了才入队。
+struct ClipboardPrompt: Equatable, Identifiable {
+    var id: String { urls.map(\.absoluteString).joined(separator: "\n") }
+    /// 从剪贴板里抠出来的抖音链接（已滤掉其它域名）。确认后下载的就是这些，不多不少。
+    let urls: [URL]
+}
+
 @MainActor
 final class ConversionService: ObservableObject {
     static let concurrencyOptions = [1, 2, 3, 4, 6]
     private static let concurrencyKey = "conversion.maxConcurrent"
 
     @Published private(set) var jobs: [Job] = []
+
+    /// 剪贴板里识别到、等用户确认的链接。非空时界面弹确认框。
+    @Published private(set) var clipboardPrompt: ClipboardPrompt?
+
+    /// 用户确认过剪贴板链接后的结论（「转视频」页签那行提示用）。
+    @Published private(set) var clipboardOutcome: SubmitOutcome?
 
     /// 并行下载数：用户可调并持久化，改完立刻重新调度。
     @Published var maxConcurrent: Int {
@@ -68,6 +82,49 @@ final class ConversionService: ObservableObject {
         if adopted > 0 { DouyinDebug.log("资料库收录外部文件 \(adopted) 个") }
     }
 
+    // MARK: - 剪贴板
+
+    /// 打开 App / 切回前台时调用：剪贴板换过内容才去读（读会弹系统授权框），
+    /// 读到抖音链接也**只记下来等确认**、不自动下载。
+    /// 读完就记下位置，所以「忽略」之后不会每次启动都再问一遍。
+    @discardableResult
+    func checkClipboard() async -> ClipboardPrompt? {
+        guard ClipboardReader.hasNewContent else { return nil }
+        guard let text = ClipboardReader.takeText() else { return nil }
+        // 只是复制了一段无关文字就不打扰：抠不出抖音链接就静默跳过，连确认框都不弹
+        let urls = DouyinExtractor.douyinURLs(in: text)
+        guard !urls.isEmpty else { return nil }
+        let prompt = ClipboardPrompt(urls: urls)
+        // 启动时 `.task` 和 scenePhase 转 active 会各调一次；内容一样就别重弹，
+        // 否则确认框会被推第二次、倒计时也跟着重来一遍。
+        guard prompt.id != clipboardPrompt?.id else { return clipboardPrompt }
+        DouyinDebug.log("剪贴板识别到 \(urls.count) 条抖音链接，弹确认框")
+        clipboardPrompt = prompt
+        return prompt
+    }
+
+    /// 用户在确认框里点了「下载」。确认框已经把 prompt 交到手里，这里不再读 `clipboardPrompt`
+    /// —— SwiftUI 关框时会先把它置空，读当前状态会拿到 nil、白白丢掉这次提交。
+    /// 下载的就是框里列出的那些链接，口径一致。
+    @discardableResult
+    func confirm(_ prompt: ClipboardPrompt) async -> SubmitOutcome {
+        if clipboardPrompt?.id == prompt.id { clipboardPrompt = nil }
+        let outcome = await enqueue(urls: prompt.urls)
+        DouyinDebug.log("确认框点下载：新入队 \(outcome.queued)，已在库 \(outcome.downloaded)，进行中 \(outcome.running)")
+        clipboardOutcome = outcome
+        return outcome
+    }
+
+    /// 用户在确认框里点了「忽略」。
+    func dismissClipboardPrompt() {
+        DouyinDebug.log("确认框点忽略")
+        clipboardPrompt = nil
+    }
+
+    func clearClipboardOutcome() {
+        clipboardOutcome = nil
+    }
+
     // MARK: - 提交
 
     /// 「粘贴即自动下载」入口：界面把文本原样交进来，识别与去重都在这里判断。
@@ -77,9 +134,12 @@ final class ConversionService: ObservableObject {
     }
 
     /// 解析文本里的链接并入队。支持一次粘多条：每行一条、或一整段里含多个链接都行。
-    /// 已经在下载中、或已经下过的链接直接跳过，不重复下载。
     private func enqueue(from text: String) async -> SubmitOutcome {
-        let urls = DouyinExtractor.allURLs(in: text)
+        await enqueue(urls: DouyinExtractor.allURLs(in: text))
+    }
+
+    /// 把一批链接入队。已经在下载中、或已经下过的直接跳过，不重复下载。
+    private func enqueue(urls: [URL]) async -> SubmitOutcome {
         guard !urls.isEmpty else { return SubmitOutcome() }
 
         // 已在处理中的同一链接不再重复提交，避免并发下重复下载

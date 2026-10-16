@@ -33,20 +33,21 @@ struct ConvertView: View {
                         Button("清空") {
                             input = ""
                             outcome = nil
+                            service.clearClipboardOutcome()
                         }
                             .foregroundStyle(.secondary)
                     }
                     .font(.subheadline)
 
                     if let notice {
-                        Text(notice)
+                        Text(notice.text)
                             .font(.caption)
-                            .foregroundStyle(outcome?.hasLink == true ? Color.secondary : Color.red)
+                            .foregroundStyle(notice.isWarning ? Color.red : Color.secondary)
                     }
                 } header: {
                     Text("链接")
                 } footer: {
-                    Text("粘贴后自动开始下载，全程在手机上完成，完成后会出现在「资料库」。已经在资料库里的不会重复下载，锁屏和后台都能继续播放。")
+                    Text("粘贴后自动开始下载。打开 App（或从抖音切回来）时会自动识别剪贴板里的链接，识别到会先弹框让你确认。全程在手机上完成，完成后会出现在「资料库」；已经在资料库里的不会重复下载，锁屏和后台都能继续播放。")
                 }
 
                 if !service.jobs.isEmpty {
@@ -101,14 +102,22 @@ struct ConvertView: View {
     }
 
     /// 把结构化结果翻成一行结论，页面只展示结论、不做判断。
-    private var notice: String? {
-        guard let outcome else { return nil }
+    /// 手动粘贴的结论优先；没有就显示「剪贴板确认框里点了下载」那次的结果。
+    private var notice: (text: String, isWarning: Bool)? {
+        if let outcome { return (text(for: outcome), !outcome.hasLink) }
+        if let confirmed = service.clipboardOutcome {
+            return ("剪贴板链接：" + text(for: confirmed), !confirmed.hasLink)
+        }
+        return nil
+    }
+
+    private func text(for outcome: SubmitOutcome) -> String {
         guard outcome.hasLink else { return "没识别到链接，请粘贴完整的分享文本或链接" }
         var parts: [String] = []
         if outcome.queued > 0 { parts.append("已开始下载 \(outcome.queued) 条") }
         if outcome.downloaded > 0 { parts.append("\(outcome.downloaded) 条已在资料库") }
         if outcome.running > 0 { parts.append("\(outcome.running) 条正在下载") }
-        return parts.isEmpty ? nil : parts.joined(separator: "，")
+        return parts.joined(separator: "，")
     }
 
     /// 粘贴即下载：`.task(id:)` 在输入变化时重跑，天然形成「等粘贴落定」的防抖。

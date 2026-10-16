@@ -10,6 +10,9 @@ enum DouyinDebug {
     static func log(_ message: @autoclosure () -> String) {
         guard enabled else { return }
         print("[d2m] \(message())")
+        // stdout 在 `devicectl --console` 这种管道下是块缓冲的：不主动 flush，
+        // 进程被 kill（或 --terminate-existing）时最后几行还在缓冲里，日志会缺关键结论。
+        fflush(stdout)
     }
 }
 
@@ -80,6 +83,9 @@ struct DouyinConfig {
     var cookieRefreshInterval: TimeInterval = 300
     /// 壳页（风控）重试次数
     var shareRetryCount = 1
+    /// 认哪些域名为「抖音链接」。剪贴板闸门用它把无关链接（淘宝、B站…）挡在确认框之外，
+    /// 匹配规则是「等于该域名 或 以 .该域名 结尾」。
+    var douyinHostSuffixes = ["douyin.com", "iesdouyin.com"]
 }
 
 actor DouyinExtractor {
@@ -206,6 +212,17 @@ actor DouyinExtractor {
             urls.append(url)
         }
         return urls
+    }
+
+    /// 只要抖音自己的链接。`allURLs` 会认任何 https 链接，而剪贴板里放的多半是别的东西：
+    /// 不加这一层，复制个淘宝/B站链接打开 App 就会弹确认框，确认了还只会下失败。
+    static func douyinURLs(in text: String) -> [URL] {
+        allURLs(in: text).filter { isDouyinHost($0.host) }
+    }
+
+    static func isDouyinHost(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return DouyinConfig().douyinHostSuffixes.contains { host == $0 || host.hasSuffix("." + $0) }
     }
 
     /// 兼容旧调用：取第一条链接。
