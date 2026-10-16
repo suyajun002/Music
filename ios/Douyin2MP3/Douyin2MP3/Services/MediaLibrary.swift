@@ -10,6 +10,10 @@ final class MediaLibrary: ObservableObject {
     private let fileManager = FileManager.default
     private let directory: URL
     private let indexURL: URL
+    /// 上次能正常读的索引留档（每次启动刷新一次），出事了手工改回去就能救回记录。
+    private var backupURL: URL { indexURL.appendingPathExtension("bak") }
+    /// 索引读成功了没有。见 `persist()` 的闸门：没读成功就不许把索引写成空的。
+    private var indexLoadedOK = false
 
     init() {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -185,12 +189,33 @@ final class MediaLibrary: ObservableObject {
         return name
     }
 
-    private func load() {
+    func load() {
+        // 索引不存在 = 全新安装（或刚被删过），空库是合法状态，可以随便写。
+        guard fileManager.fileExists(atPath: indexURL.path) else {
+            indexLoadedOK = true
+            return
+        }
         guard
             let data = try? Data(contentsOf: indexURL),
             let decoded = try? JSONDecoder().decode([MediaItem].self, from: data)
-        else { return }
+        else {
+            // ⚠️ 解不出来（比如以后给 `MediaItem` 加了个非可选字段，旧索引解不动）时，
+            // **绝不能就这么当空库继续跑**：`items` 会变成 []，之后任意一次 `persist()`
+            // 就把整份索引覆盖没了。文件还躺在 `Documents/Video` 里、`adoptExternalFiles`
+            // 也能把它们重新收进来，但 **`sourceURL` 是 nil —— 去重记忆全丢**，
+            // 重贴同一条链接要重新下载，YouTube 那边就是重新花钱。
+            // 所以先把这份索引原样留档，再由 `persist()` 的闸门决定能不能写空。
+            let stamp = Int(Date().timeIntervalSince1970)
+            let backup = indexURL.appendingPathExtension("corrupt-\(stamp)")
+            try? fileManager.moveItem(at: indexURL, to: backup)
+            DouyinDebug.log("索引解码失败，已留档 \(backup.lastPathComponent)，这次启动不写空索引")
+            return
+        }
         items = decoded.filter { fileManager.fileExists(atPath: fileURL(for: $0).path) }
+        indexLoadedOK = true
+        // 留一份「上次能正常读的索引」。4 KB 的东西，换一个手工回滚的机会：
+        // 万一以后某个版本写坏了索引，把 `.bak` 改回 `library.json` 就能救回全部「下过没有」的记录。
+        try? data.write(to: backupURL, options: .atomic)
         migrateTitles()
     }
 
@@ -212,6 +237,12 @@ final class MediaLibrary: ObservableObject {
     }
 
     private func persist() {
+        // 闸门：索引没读成功、而现在要写一份空的 —— 那多半是「解码失败后 items 被清空」
+        // 的样子，不是用户真的把歌删光了，写下去就是抹记录。宁可这次不写（下次有内容了再写）。
+        guard indexLoadedOK || !items.isEmpty else {
+            DouyinDebug.log("索引没读成功，且当前为空 —— 拒绝覆盖，保住磁盘上那份记录")
+            return
+        }
         guard let data = try? JSONEncoder().encode(items) else { return }
         try? data.write(to: indexURL, options: .atomic)
     }
