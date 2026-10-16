@@ -85,7 +85,7 @@ struct PlayerView: View {
             Text(player.currentTitle)
                 .font(.title3.weight(.semibold))
                 .lineLimit(1)
-            Text(item?.subtitle ?? "")
+            Text(item.map { service.library.subtitle(for: $0) } ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

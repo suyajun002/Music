@@ -63,7 +63,4 @@ struct MediaItem: Codable, Identifiable, Equatable {
         guard let sizeBytes else { return "" }
         return String(format: "%.1f MB", Double(sizeBytes) / 1024 / 1024)
     }
-
-    /// 列表、迷你播放条、全屏播放页共用的副标题口径，避免三处各写一份漂移。
-    var subtitle: String { durationText }
 }

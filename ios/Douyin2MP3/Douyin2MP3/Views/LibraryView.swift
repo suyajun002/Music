@@ -81,7 +81,7 @@ struct LibraryView: View {
                         .font(.body)
                         .foregroundStyle(isCurrent(item) ? Color.accentColor : .primary)
                         .lineLimit(1)
-                    Text(item.subtitle)
+                    Text(service.library.subtitle(for: item))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

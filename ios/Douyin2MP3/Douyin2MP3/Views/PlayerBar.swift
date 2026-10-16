@@ -16,7 +16,7 @@ struct PlayerBar: View {
                         Text(player.currentTitle)
                             .font(.subheadline)
                             .lineLimit(1)
-                        Text(item.subtitle)
+                        Text(service.library.subtitle(for: item))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }

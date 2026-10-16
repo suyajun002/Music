@@ -52,7 +52,7 @@ final class MediaLibrary: ObservableObject {
 
         let item = MediaItem(
             id: videoID,
-            title: await Self.resolveTitle(explicit: title, url: url),
+            title: await Self.resolvedTitle(explicit: title, fileName: fileName, url: url),
             fileName: fileName,
             artworkFileName: artworkName,
             sizeBytes: size,
@@ -123,6 +123,14 @@ final class MediaLibrary: ObservableObject {
         return duration.seconds
     }
 
+    /// 入库用的标题：解析一层之后，分段文件还要去掉 ID3 里带的段号后缀
+    /// （`<标题> (P1/4)`），段号交给副标题，标题里不重复出现。
+    private static func resolvedTitle(explicit: String?, fileName: String, url: URL) async -> String {
+        let title = await resolveTitle(explicit: explicit, url: url)
+        guard Segments.parse(fileName) != nil else { return title }
+        return Segments.stripPartSuffix(from: title)
+    }
+
     /// 标题优先级：显式标题 → 文件内嵌元数据标题 → 文件名（去扩展名）。
     private static func resolveTitle(explicit: String?, url: URL) async -> String {
         if let explicit, !explicit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -191,12 +199,16 @@ final class MediaLibrary: ObservableObject {
 
     /// 老版本取流时标题没解转义（会显示成「开车\u002F健身」），这里就地修一次并回写，
     /// 省得为了一个标题去重下整条视频。修不动就原样保留。
+    /// 另外把分段条目标题里 ID3 遗留的「(P1/4)」去掉 —— 现在段号由副标题负责，标题里重复。
     private func migrateTitles() {
         var changed = false
         for index in items.indices {
-            let fixed = JSONEscapes.decode(items[index].title)
-            guard fixed != items[index].title else { continue }
-            items[index].title = fixed
+            var title = JSONEscapes.decode(items[index].title)
+            if items[index].segmentKey != nil {
+                title = Segments.stripPartSuffix(from: title)
+            }
+            guard title != items[index].title else { continue }
+            items[index].title = title
             changed = true
         }
         if changed { persist() }
