@@ -67,3 +67,19 @@ struct MediaItem: Codable, Identifiable, Equatable {
         return String(format: "%.1f MB", Double(sizeBytes) / 1024 / 1024)
     }
 }
+
+/// 「下过、后来被删掉」的链接。只记链接和标题，一条几十字节。
+///
+/// 为什么删了还要记：YouTube 那条是**按首花钱**的。删掉一首歌再贴同一条链接，
+/// 若什么都不记得就会重新开一次 Apify run、重新扣一次钱，而用户完全没被问过。
+/// 所以这些链接**默认不再自动重下**，只在确认框和结论里点名「这条下过、后来删了」，
+/// 要重下得由用户明确点一下。
+struct DeletedLink: Codable, Identifiable, Equatable {
+    var sourceURL: String
+    /// 当时入库的标题。只为了在提示里指名道姓（「下过又删了：Ice Paper…」），
+    /// 光甩一条 URL 用户认不出那是哪首。
+    var title: String
+    var deletedAt: Date
+
+    var id: String { sourceURL }
+}

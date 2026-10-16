@@ -56,6 +56,17 @@ struct ConvertView: View {
                             .font(.caption)
                             .foregroundStyle(notice.isWarning ? Color.red : Color.secondary)
                     }
+                    // 「下过又删了」的链接默认不重下（YouTube 一条一钱），所以得给个明确的门：
+                    // 用户点这里才真下。不点就什么都不发生，也不会花钱。
+                    if let deleted = shownOutcome?.deleted, !deleted.isEmpty {
+                        Button("重新下载这 \(deleted.count) 条") {
+                            Task {
+                                let result = await service.redownload(deleted)
+                                outcome = result
+                            }
+                        }
+                        .font(.caption)
+                    }
                 } header: {
                     Text("链接")
                 } footer: {
@@ -119,14 +130,16 @@ struct ConvertView: View {
         return text
     }
 
+    /// 结论和「重新下载」按钮都看它：手输优先，没有就用剪贴板确认框那次的。
+    private var shownOutcome: SubmitOutcome? {
+        outcome ?? service.clipboardOutcome
+    }
+
     /// 把结构化结果翻成一行结论，页面只展示结论、不做判断。
-    /// 手动粘贴的结论优先；没有就显示「剪贴板确认框里点了下载」那次的结果。
     private var notice: (text: String, isWarning: Bool)? {
-        if let outcome { return (text(for: outcome), !outcome.hasLink) }
-        if let confirmed = service.clipboardOutcome {
-            return ("剪贴板链接：" + text(for: confirmed), !confirmed.hasLink)
-        }
-        return nil
+        guard let shown = shownOutcome else { return nil }
+        if outcome != nil { return (text(for: shown), !shown.hasLink) }
+        return ("剪贴板链接：" + text(for: shown), !shown.hasLink)
     }
 
     private func text(for outcome: SubmitOutcome) -> String {
@@ -143,6 +156,8 @@ struct ConvertView: View {
         // 而用户真正想知道的是「我这次没重复提交吧」。
         if outcome.downloaded > 0 { parts.append("\(outcome.downloaded) 条已在资料库，跳过") }
         if outcome.running > 0 { parts.append("\(outcome.running) 条正在下载，跳过") }
+        // 这条要说清「没做什么」：不然用户会以为已经在下，等半天等不到
+        if !outcome.deleted.isEmpty { parts.append("\(outcome.deleted.count) 条下过又删了，没重下") }
         if outcome.unsupported > 0 { parts.append("\(outcome.unsupported) 条不支持") }
         return parts.joined(separator: "，")
     }

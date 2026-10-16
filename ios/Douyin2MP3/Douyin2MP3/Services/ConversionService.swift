@@ -12,9 +12,12 @@ struct SubmitOutcome: Equatable {
     /// 认不出来源的链接数（只认抖音和 YouTube）。跟「没识别到链接」分开报：
     /// 粘了一条 B站链接进来还说「没识别到链接」，会让人以为是自己没粘对。
     var unsupported = 0
+    /// 下过、后来被删掉的链接。**这次没有重下** —— 重下要花钱，得用户明确点一下。
+    /// 单独拎出来，界面才能给一个「重新下载」的按钮，而不是让用户自己琢磨怎么办。
+    var deleted: [URL] = []
 
     /// 文本里是否识别到了链接（全为 0 表示没识别到）。
-    var hasLink: Bool { queued + downloaded + running > 0 }
+    var hasLink: Bool { queued + downloaded + running + deleted.count > 0 }
 }
 
 /// 一批链接**在提交之前**就能算出来的处境：给确认框提前说明白，
@@ -26,12 +29,14 @@ struct ClipboardPromptStatus: Equatable {
     var downloaded = 0
     /// 这批里已经在下载中的条数。
     var running = 0
+    /// 这批里「下过、后来被删掉」的条数。默认不重下 —— 重下要花钱。
+    var deleted = 0
     /// 这批一共几条链接。
     var total = 0
 
-    /// 全都在库里/队列里 —— 这一下点了也不会新下任何东西（YouTube 那边就是「不用花钱」）。
-    var nothingNew: Bool { total > 0 && downloaded + running == total }
-    var skipped: Int { downloaded + running }
+    /// 这一下点了也不会新下任何东西（YouTube 那边就是「不用花钱」）。
+    var nothingNew: Bool { total > 0 && downloaded + running + deleted == total }
+    var skipped: Int { downloaded + running + deleted }
 }
 
 /// 从剪贴板里识别到的、**等用户确认**的一批链接。
@@ -194,6 +199,7 @@ final class ConversionService: ObservableObject {
             switch occupied[key] {
             case .running: status.running += 1
             case .downloaded: status.downloaded += 1
+            case .deleted: status.deleted += 1
             case nil:
                 occupied[key] = .running                        // 同一批里后面的重复项按「正在下」算
             }
@@ -210,17 +216,30 @@ final class ConversionService: ObservableObject {
     /// 光看代码说「应该不会重复」不算数，得让真机自己报出第二次被挡下来了。
     /// 想验这条就传一条**抖音**链接（不花钱）：YouTube 那种第二次真被挡住才重要、
     /// 但万一没挡住就是真扣一次钱，不适合当回归检查。
+    ///
+    /// 如果第一次捞回来的结果是「下过又删了」（事先往 `library-history.json` 里塞一条
+    /// 对应记录就能造出这个局面），再顺手把「重新下载」那条路也走一遍 —— 那条路同样
+    /// 只在用户点了按钮才走，命令行点不了按钮，只能让代码自己验。
     func submitDemoLinkIfRequested() async {
         guard let raw = ProcessInfo.processInfo.environment["D2M_YT_URL"],
               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
         DouyinDebug.log("演示链接入队：\(raw)")
         let first = await enqueue(from: raw)
-        DouyinDebug.log("演示链接第 1 次：新入队 \(first.queued)，已在库 \(first.downloaded)，正在下 \(first.running)，不支持 \(first.unsupported)")
+        DouyinDebug.log("演示链接第 1 次：新入队 \(first.queued)，已在库 \(first.downloaded)，正在下 \(first.running)，下过又删了 \(first.deleted.count)，不支持 \(first.unsupported)")
 
         let second = await enqueue(from: raw)
-        DouyinDebug.log("演示链接第 2 次（同一条，应全部被挡）：新入队 \(second.queued)，已在库 \(second.downloaded)，正在下 \(second.running)，不支持 \(second.unsupported)")
-        DouyinDebug.log(second.queued == 0 ? "去重自检：通过，同一条没有重复提交" : "去重自检：**失败**，同一条被重复提交了")
+        DouyinDebug.log("演示链接第 2 次（同一条，应全部被挡）：新入队 \(second.queued)，已在库 \(second.downloaded)，正在下 \(second.running)，下过又删了 \(second.deleted.count)，不支持 \(second.unsupported)")
+        guard second.queued == 0 else {
+            DouyinDebug.log("去重自检：**失败**，同一条被重复提交了")
+            return
+        }
+        DouyinDebug.log("去重自检：通过，同一条没有重复提交")
+
+        guard !first.deleted.isEmpty else { return }
+        let forced = await redownload(first.deleted)
+        DouyinDebug.log("重下自检：要求重下 \(first.deleted.count) 条 → 新入队 \(forced.queued)"
+            + (forced.queued == first.deleted.count ? "，通过" : "，**失败**（该下起来的没下）"))
     }
 
     // MARK: - 提交
@@ -240,7 +259,10 @@ final class ConversionService: ObservableObject {
     ///
     /// 去重按 `MediaSource.dedupeKey` 算，不按 URL 原串：同一个 YouTube 视频换个写法
     /// （`youtu.be/ID` ↔ `watch?v=ID&si=…`）必须算同一条，否则会重复开 run、重复扣钱。
-    private func enqueue(urls: [URL]) async -> SubmitOutcome {
+    ///
+    /// `redownloading` 是「用户明确说了要重下」（点了「重新下载」按钮）：
+    /// 只多放行 `.deleted` 那一类，「正在下」和「已在库」照样挡——那两类没有重复花钱的问题。
+    private func enqueue(urls: [URL], redownloading: Bool = false) async -> SubmitOutcome {
         guard !urls.isEmpty else { return SubmitOutcome() }
 
         var existing = occupiedKeys()
@@ -259,10 +281,21 @@ final class ConversionService: ObservableObject {
                 continue
             }
 
-            // 「正在下」和「下过了」分开报：用户需要知道是「别急，正在下」还是「已经有了、白贴了」。
-            if let state = existing[key] {
-                if state == .running { outcome.running += 1 } else { outcome.downloaded += 1 }
+            // 三种「已经有了」分开报：用户需要知道是「别急，正在下」、「已经有了」，
+            // 还是「你以前下过、后来删了」——最后一种要给他一个决定的机会。
+            switch existing[key] {
+            case .running:
+                outcome.running += 1
                 continue
+            case .downloaded:
+                outcome.downloaded += 1
+                continue
+            case .deleted where !redownloading:
+                // 默认不重下：YouTube 一条就是一钱，不该因为「又贴了一次」就悄悄再花一次。
+                outcome.deleted.append(url)
+                continue
+            case .deleted, nil:
+                break   // 该下：库里没有，或者是用户明确要求重下
             }
             // 同一批里的后来者按「正在下载」算，跟下一批再贴这条链接的说法一致
             existing[key] = .running
@@ -278,12 +311,28 @@ final class ConversionService: ObservableObject {
         return outcome
     }
 
-    private enum ExistingState { case running, downloaded }
+    /// 用户点了「重新下载」：把刚才因为「下过又删了」被挡下的链接真正下起来。
+    /// 会重新问一次默认的那些规矩（正在下、已在库的照样挡），只是不再把 `.deleted` 当障碍。
+    @discardableResult
+    func redownload(_ urls: [URL]) async -> SubmitOutcome {
+        DouyinDebug.log("用户要求重下 \(urls.count) 条（下过又删了的那批）")
+        let outcome = await enqueue(urls: urls, redownloading: true)
+        DouyinDebug.log("重下结果：新入队 \(outcome.queued)，已在库 \(outcome.downloaded)，正在下 \(outcome.running)，不支持 \(outcome.unsupported)")
+        return outcome
+    }
 
-    /// 当前已经被占用的去重键 → 状态。队列（正在跑的）和资料库（下过的）都算。
-    /// 队列后写，所以同一键两处都有时报「正在下载」——那是用户更需要的说法。
+    private enum ExistingState { case running, downloaded, deleted }
+
+    /// 当前已经被占用的去重键 → 状态。队列（正在跑的）、资料库（下过的）、
+    /// 「下过又删了」的记录，三处都算。
+    /// 顺序就是优先级：**正在下 > 已在库 > 下过又删了** —— 同一键多处都占着时，
+    /// 报用户更需要的那个说法（「别急」比「你以前删过」有用；「库里就有」比「你删过」有用）。
     private func occupiedKeys() -> [String: ExistingState] {
         var states: [String: ExistingState] = [:]
+        for link in library.deletedLinks {
+            guard let url = URL(string: link.sourceURL) else { continue }
+            states[key(of: url)] = .deleted
+        }
         for item in library.items {
             guard let raw = item.sourceURL, let url = URL(string: raw) else { continue }
             states[key(of: url)] = .downloaded

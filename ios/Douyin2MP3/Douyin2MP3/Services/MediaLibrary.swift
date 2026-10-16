@@ -6,10 +6,16 @@ import UIKit
 @MainActor
 final class MediaLibrary: ObservableObject {
     @Published private(set) var items: [MediaItem] = []
+    /// 「下过、后来被删掉」的链接。默认不再自动重下，只在提示里点名。
+    @Published private(set) var deletedLinks: [DeletedLink] = []
+
+    /// 记录条数上限。这只是提醒用的，不是账本。
+    private static let maxDeletedLinks = 200
 
     private let fileManager = FileManager.default
     private let directory: URL
     private let indexURL: URL
+    private let historyURL: URL
     /// 上次能正常读的索引留档（每次启动刷新一次），出事了手工改回去就能救回记录。
     private var backupURL: URL { indexURL.appendingPathExtension("bak") }
     /// 索引读成功了没有。见 `persist()` 的闸门：没读成功就不许把索引写成空的。
@@ -19,8 +25,10 @@ final class MediaLibrary: ObservableObject {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         directory = documents.appendingPathComponent("Video", isDirectory: true)
         indexURL = documents.appendingPathComponent("library.json")
+        historyURL = documents.appendingPathComponent("library-history.json")
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         load()
+        loadDeletedLinks()
     }
 
     func fileURL(for item: MediaItem) -> URL {
@@ -62,6 +70,8 @@ final class MediaLibrary: ObservableObject {
             sourceURL: sourceURL
         )
         items.insert(item, at: 0)
+        // 又下回来了：这条链接的「下过又删了」记录就没用了，留着反而会让下次贴它被多挡一次
+        forgetDeletedLinks(matching: sourceURL)
         persist()
     }
 
@@ -107,7 +117,52 @@ final class MediaLibrary: ObservableObject {
             try? fileManager.removeItem(at: artwork)
         }
         items.removeAll { $0.id == item.id }
+        // 删掉不等于「当没下过」：YouTube 是按首花钱的，留个记录好在下一次贴同一条链接时
+        // 明确告诉用户「这条下过又删了」，由他决定要不要再花一次，而不是默默重下。
+        if let raw = item.sourceURL { remember(deleted: raw, title: item.title) }
         persist()
+    }
+
+    // MARK: - 「下过又删了」的记录
+
+    /// 只记链接和标题，落在 `Documents/library-history.json`。
+    /// **和 `library.json` 分开存**：那个是 `[MediaItem]` 的数组，往里塞别的结构会改变格式，
+    /// 老版本解不动 —— 而解不动就等于把去重记忆全丢了（见 `load()` 的注释）。
+    private func remember(deleted sourceURL: String, title: String) {
+        forgetDeletedLinks(matching: sourceURL)
+        deletedLinks.insert(DeletedLink(sourceURL: sourceURL, title: title, deletedAt: Date()), at: 0)
+        // 只留最近这些。这只是「提醒一下」用的，不是账本，没必要无限长。
+        if deletedLinks.count > Self.maxDeletedLinks {
+            deletedLinks.removeLast(deletedLinks.count - Self.maxDeletedLinks)
+        }
+        persistDeletedLinks()
+    }
+
+    /// 把与 `sourceURL` 指向**同一条内容**的记录去掉（认同一个视频的不同链接写法）。
+    /// 指到 nil 就整条不清 —— 本地导入的文件没有链接，不该顺手清掉别的记录。
+    func forgetDeletedLinks(matching sourceURL: String?) {
+        guard let key = Self.dedupeKey(of: sourceURL) else { return }
+        let before = deletedLinks.count
+        deletedLinks.removeAll { Self.dedupeKey(of: $0.sourceURL) == key }
+        if deletedLinks.count != before { persistDeletedLinks() }
+    }
+
+    private static func dedupeKey(of sourceURL: String?) -> String? {
+        guard let sourceURL, let url = URL(string: sourceURL), let source = MediaSource.of(url) else { return nil }
+        return source.dedupeKey(for: url)
+    }
+
+    private func loadDeletedLinks() {
+        guard
+            let data = try? Data(contentsOf: historyURL),
+            let decoded = try? JSONDecoder().decode([DeletedLink].self, from: data)
+        else { return }
+        deletedLinks = decoded
+    }
+
+    private func persistDeletedLinks() {
+        guard let data = try? JSONEncoder().encode(deletedLinks) else { return }
+        try? data.write(to: historyURL, options: .atomic)
     }
 
     func totalBytes() -> Int { items.compactMap(\.sizeBytes).reduce(0, +) }

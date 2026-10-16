@@ -172,11 +172,15 @@ struct ClipboardConfirmView: View {
         case .blocked:
             return blockedReason ?? ""
         case .nothingNew:
-            // 「正在下」和「下过了」都要说，不然用户看着一个不动的倒计时环以为自己点坏了
+            // 「正在下」「下过了」「下过又删了」都要说，不然用户看着一个不动的倒计时环以为自己点坏了
             var parts: [String] = []
             if status.downloaded > 0 { parts.append("\(status.downloaded) 条已在资料库") }
             if status.running > 0 { parts.append("\(status.running) 条正在下载") }
-            return "\(parts.joined(separator: "，"))，不会重复下载"
+            if status.deleted > 0 { parts.append("\(status.deleted) 条下过又删了") }
+            var text = "\(parts.joined(separator: "，"))，不会重复下载"
+            // 删过的那批要给他一条出路：两个字段都不提的话，用户只会觉得这条链接再也下不了了
+            if status.deleted > 0 { text += "（要重下去「转视频」页点一下）" }
+            return text
         case .counting:
             var text = "\(remaining) 秒后自动下载"
             if prompt.isPaid { text += "（要花钱）" }
@@ -199,7 +203,11 @@ struct ClipboardConfirmView: View {
             var parts: [String] = []
             if status.downloaded > 0 { parts.append("\(status.downloaded) 条已在资料库") }
             if status.running > 0 { parts.append("\(status.running) 条正在下载") }
+            if status.deleted > 0 { parts.append("\(status.deleted) 条下过又删了") }
             lines.append("\(parts.joined(separator: "，"))，会自动跳过，不会重复下载。")
+            if status.deleted > 0 {
+                lines.append("下过又删了的那几条不会自动重下（YouTube 一条就要一次钱），要重下去「转视频」页点「重新下载」。")
+            }
             if !status.nothingNew {
                 lines.append("这次实际新下 \(status.total - status.skipped) 条。")
             }

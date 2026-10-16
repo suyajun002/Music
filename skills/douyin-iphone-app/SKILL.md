@@ -94,7 +94,7 @@ triggers:
 - `URL(string:)` 之外，抠视频 ID 的正则要覆盖 `youtu.be/`、`/shorts/`、`/embed/`、`?v=` 四种；长度必须正好 11 位，多了少了都算认不出。纯播放列表（只有 `list=`）没有 ID，不认。
 - 域名路由在 `Models/MediaSource.swift`，匹配规则是「**等于该域名 或 以 `.该域名` 结尾**」——**不能用 `contains`**，否则 `douyin.com.evil.example` 会被当成抖音。
 
-**不花命令行验证**：`swiftc -O Services/MediaExtracting.swift Models/MediaSource.swift Services/YouTubeExtractor.swift Services/DouyinExtractor.swift Services/JSONEscapes.swift main.swift -o yttest`（`DouyinExtractor.swift` 是纯 Foundation，可以拉进来提供 `DouyinConfig`，省得写桩；`YouTubeExtractor` 里解析用的 `ResultItem(json:)` 是 `internal`，命令行直接喂真实 JSON）。57 项：来源路由、扩展名/计费、视频 ID 正则、抠链接、**去重键**（同一个视频五种写法算一条、抖音短链路径大小写不能抹平）、Apify 响应解析（成功 / 失败 / 空 / 垃圾地址）、run 状态终态、补 token 重试、进度换算、mp3 魔数校验。
+**不花命令行验证**：`swiftc -O Services/MediaExtracting.swift Models/MediaSource.swift Services/YouTubeExtractor.swift Services/DouyinExtractor.swift Services/JSONEscapes.swift main.swift -o yttest`（`DouyinExtractor.swift` 是纯 Foundation，可以拉进来提供 `DouyinConfig`，省得写桩；`YouTubeExtractor` 里解析用的 `ResultItem(json:)` 是 `internal`，命令行直接喂真实 JSON）。62 项：来源路由、扩展名/计费、视频 ID 正则、抠链接、**去重键**（同一个视频五种写法算一条、抖音短链路径大小写不能抹平）、Apify 响应解析（成功 / 失败 / 空 / 垃圾地址）、run 状态终态、补 token 重试、进度换算、mp3 魔数校验。
 **花钱的端到端验证**：`D2M_YT_URL=<链接>` 环境变量起 App（`ConversionService.submitDemoLinkIfRequested()`）走真实 Apify 链路，**跑之前先问用户**（一次约 ¥0.5）。
 
 ## 通用：命令行构建并安装到真机
@@ -178,11 +178,12 @@ triggers:
 
 ## 同一个链接不会重复下载（去重）
 
-三层，都在 `ConversionService.enqueue`：
+四层，都在 `ConversionService.enqueue`（`occupiedKeys()` 的顺序就是优先级）：
 
 1. **同一批内的重复**：一条链接在一段文本里出现两次，静默去重。
 2. **正在跑的任务**：队列里 `state.isActive`（`queued` / `running`）已占住这个键 → 跳过，计 `running`。
 3. **已在资料库**：下过的 → 跳过，计 `downloaded`。
+4. **下过、后来又被删了**：见下面「删了也记得」——也跳过，但在结论里点名。
 
 ⚠️ **键不能是 URL 原串，必须是「同一条内容」的标识**（`MediaSource.dedupeKey(for:)`）。同一个 YouTube 视频能贴成 `youtu.be/ID`、`www.youtube.com/watch?v=ID`、`music.youtube.com/watch?v=ID`、挂一串 `?si=` 跟踪参数、`/shorts/ID` —— 原串当键就是五个键，**开五次 Apify run、同一首歌扣五份钱**。所以 YouTube 一律收敛到视频 ID（复用 `YouTubeExtractor.videoID(of:)`）。
 
@@ -190,6 +191,23 @@ triggers:
 - 资料库里存的是当初那次的 URL 原串，所以**查库时也要过一遍同一个键函数**，否则「上次是短链、这次是长链」照样重复下。`MediaLibrary.contains(sourceURL:)` 那个按原串比的旧方法已经删掉了 —— 别再加回来，两套口径必然对不上。
 - 确认框上要**提前**说清楚（`ConversionService.status(for:)` → `ClipboardPromptStatus`）：几条已在库、几条正在下、这次实际新下几条。它和入队**共用同一套键**，所以预告的数字和点下去的结论必然一致；各算一套就会出现「框上说不会重复下，点完却真又下了一遍」。全都下过时不倒计时（数 5 秒然后什么都不做，比直接说明白更让人犯嘀咕），圈里按钮变「知道了」。
 - **失败的任务不算占位**：允许重贴重试，这是有意为之。
+
+### 删了也记得（第 4 层，防的是「悄悄再花一次钱」）
+
+删掉一首歌、之后又贴同一条链接：要是什么都不记得，YouTube 那条会**重新开一次 Apify run、重新扣一次钱**，而用户压根没被问过。所以 `MediaLibrary.delete(_:)` 顺手把链接记进 `Documents/library-history.json`（`DeletedLink`：只存 `sourceURL` / `title` / `deletedAt`，一条几十字节，上限 200 条），下回来时 `register(...)` 再把这条记录清掉。
+
+- **默认不重下**，只在结论里报「N 条下过又删了，没重下」，并在「转视频」页给一个「重新下载这 N 条」按钮 —— 想重下必须用户**明确点一下**（`ConversionService.redownload(_:)` → `enqueue(urls:redownloading: true)`，只有它会放行 `.deleted`）。
+- 确认框里也按同一套口径写，并指向「到『转视频』页点一下重新下载」。不然用户看到「都下过了」会一头雾水：明明刚删掉。
+- 记的是**键**不是原串（`MediaLibrary.dedupeKey(of:)` 和 `MediaSource.dedupeKey(for:)` 同一套），所以删时贴的是短链、重贴换成另一种写法照样认得出。
+- 真机验证不用花一分钱：往设备的 `library-history.json` 里塞一条**假抖音链接**的记录，再用 `D2M_YT_URL` 传这条链接 —— 第 1、2 次应当「新入队 0 / 下过又删了 1」，随后 `submitDemoLinkIfRequested()` 会自己走一遍重下，日志打「重下自检：要求重下 1 条 → 新入队 1，通过」。验完记得把那个文件写回 `[]`，别留假记录。
+
+### 资料库索引不能被清掉
+
+`library.json` 一丢，所有 `sourceURL` 就没了 —— 去重全失效，上面几层保护一次全拆掉。两道闸：
+
+- **解码失败不覆盖**：`load()` 把坏文件改名成 `library.json.corrupt-<时间戳>` 留证，并让 `indexLoadedOK = false`；`persist()` 于是拒绝写「索引没读成功 + 当前为空」这个组合 —— 那多半是「解码失败后 items 被清空」的样子，不是用户真把歌删光了，写下去就是抹记录。
+- 每次成功加载都另存一份 `library.json.bak`。
+- `Documents/` 系统**不会**清（只有 `tmp/`、`Library/Caches/` 会被清），默认也进 iCloud/iTunes 备份；真正的风险只有「删除 App」和索引损坏。
 
 ## 「粘贴链接」按钮点了没反应
 
