@@ -67,6 +67,8 @@ struct RootView: View {
                 // 不读 service.clipboardPrompt——confirm 会先把它置空，读当前状态等于把这次提交丢掉。
                 onConfirm: { Task { await service.confirm(prompt) } },
                 blockedReason: blockedReason(for: prompt),
+                // 和入队走同一套去重键：框上预告的数字，跟点下去之后的结论必然一致
+                status: service.status(for: prompt),
                 // 「去设置」：先收起这个框，再开设置面板 —— 两个 sheet/overlay 叠着会打架
                 onFix: {
                     service.dismissClipboardPrompt()

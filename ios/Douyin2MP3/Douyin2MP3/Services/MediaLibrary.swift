@@ -39,11 +39,6 @@ final class MediaLibrary: ObservableObject {
         items.contains { $0.id == videoID }
     }
 
-    /// 这条来源链接是否已经下载入库（「粘贴即下载」用它跳过重复）。
-    func contains(sourceURL: String) -> Bool {
-        items.contains { $0.sourceURL == sourceURL }
-    }
-
     /// 入库：按类型取封面（视频抽首帧、音频读内嵌图），读时长，写索引。
     /// 标题优先用显式传入的（抖音取流结果），其次文件自身元数据，最后退回文件名。
     func register(videoID: String, title: String?, fileName: String, sourceURL: String?) async {

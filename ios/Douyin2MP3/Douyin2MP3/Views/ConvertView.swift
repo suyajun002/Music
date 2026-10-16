@@ -8,6 +8,8 @@ struct ConvertView: View {
     @Binding var showsSettings: Bool
     @State private var input = ""
     @State private var outcome: SubmitOutcome?
+    /// 「粘贴链接」按钮的失败原因。空着就是没出问题。
+    @State private var pasteNote: String?
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -29,18 +31,26 @@ struct ConvertView: View {
 
                     HStack {
                         Button("粘贴链接", systemImage: "doc.on.clipboard") {
-                            if let text = UIPasteboard.general.string { input = text }
+                            paste()
                         }
                         Spacer()
                         Button("清空") {
                             input = ""
                             outcome = nil
+                            pasteNote = nil
                             service.clearClipboardOutcome()
                         }
                             .foregroundStyle(.secondary)
                     }
                     .font(.subheadline)
 
+                    // 「点了没反应」是这类按钮最容易招人骂的地方，所以每一种「什么也没发生」
+                    // 都要说一句为什么 —— 要么读不到剪贴板，要么读到了但一条链接都没认出来。
+                    if let pasteNote {
+                        Text(pasteNote)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                     if let notice {
                         Text(notice.text)
                             .font(.caption)
@@ -129,10 +139,39 @@ struct ConvertView: View {
         }
         var parts: [String] = []
         if outcome.queued > 0 { parts.append("已开始下载 \(outcome.queued) 条") }
-        if outcome.downloaded > 0 { parts.append("\(outcome.downloaded) 条已在资料库") }
-        if outcome.running > 0 { parts.append("\(outcome.running) 条正在下载") }
+        // 「跳过」两个字要写出来：只说「N 条已在资料库」像是陈述事实，
+        // 而用户真正想知道的是「我这次没重复提交吧」。
+        if outcome.downloaded > 0 { parts.append("\(outcome.downloaded) 条已在资料库，跳过") }
+        if outcome.running > 0 { parts.append("\(outcome.running) 条正在下载，跳过") }
         if outcome.unsupported > 0 { parts.append("\(outcome.unsupported) 条不支持") }
         return parts.joined(separator: "，")
+    }
+
+    /// 「粘贴链接」按钮。
+    ///
+    /// ⚠️ 三个坑都在这一个按钮上，历史上它「点了没反应」就是踩了这三个：
+    /// 1. `UIPasteboard.general.string` 在**用户拒绝过系统粘贴授权**之后会一直返回 nil
+    ///    （iOS 16 起的系统框点过「不允许」就记住了），不能默默什么都不做；
+    /// 2. 剪贴板里不是文本（图片、文件）时同样是 nil；
+    /// 3. 粘进来的内容**和输入框里现有的完全一样**时，`input` 没变 →
+    ///    `.task(id: input)` 不触发 → 看着就像按钮坏了。所以这种情况要自己提交一次。
+    private func paste() {
+        guard let text = UIPasteboard.general.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+        else {
+            DouyinDebug.log("点「粘贴链接」：没读到剪贴板文本")
+            pasteNote = "没读到剪贴板内容：可能被系统拒绝了粘贴授权（设置 → Music → 从其他 App 粘贴 → 允许），或者剪贴板里不是文字。"
+            return
+        }
+
+        pasteNote = nil
+        if text == input {
+            DouyinDebug.log("点「粘贴链接」：内容和输入框一样，直接提交一次")
+            Task { await submit(text) }
+        } else {
+            DouyinDebug.log("点「粘贴链接」：填入 \(text.count) 个字符")
+            input = text
+        }
     }
 
     /// 粘贴即下载：`.task(id:)` 在输入变化时重跑，天然形成「等粘贴落定」的防抖。
@@ -140,8 +179,12 @@ struct ConvertView: View {
         guard !input.isEmpty else { return }
         try? await Task.sleep(for: .milliseconds(450))
         guard !Task.isCancelled else { return }
+        await submit(input)
+    }
 
-        let result = await service.autoSubmit(from: input)
+    /// 真正的提交。手输、自动识别、按钮重复粘贴都走这里，结论口径只有一套。
+    private func submit(_ text: String) async {
+        let result = await service.autoSubmit(from: text)
         guard !Task.isCancelled else { return }
         outcome = result
 

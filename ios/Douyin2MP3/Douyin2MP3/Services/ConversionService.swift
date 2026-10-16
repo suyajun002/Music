@@ -17,6 +17,23 @@ struct SubmitOutcome: Equatable {
     var hasLink: Bool { queued + downloaded + running > 0 }
 }
 
+/// 一批链接**在提交之前**就能算出来的处境：给确认框提前说明白，
+/// 而不是等倒计时走完、扣了钱（YouTube）才发现「这条我早就下过了」。
+///
+/// 和 `SubmitOutcome` 分开：那个是「提交之后」的结论，这个是「提交之前」的预告。
+struct ClipboardPromptStatus: Equatable {
+    /// 这批里已经在资料库里的条数。
+    var downloaded = 0
+    /// 这批里已经在下载中的条数。
+    var running = 0
+    /// 这批一共几条链接。
+    var total = 0
+
+    /// 全都在库里/队列里 —— 这一下点了也不会新下任何东西（YouTube 那边就是「不用花钱」）。
+    var nothingNew: Bool { total > 0 && downloaded + running == total }
+    var skipped: Int { downloaded + running }
+}
+
 /// 从剪贴板里识别到的、**等用户确认**的一批链接。
 /// 自动下载会让人莫名其妙多出一首歌，所以识别到之后只弹确认框，用户点了才入队。
 struct ClipboardPrompt: Equatable, Identifiable {
@@ -164,6 +181,26 @@ final class ConversionService: ObservableObject {
         clipboardOutcome = nil
     }
 
+    /// 确认框要显示的那批链接的处境：几条已经在库里、几条正在下、一共几条。
+    /// 和入队走的是**同一套去重键**，所以预告的数字和点下去之后的结论必然一致 ——
+    /// 两边各算一套的话，就会出现「框上说不会重复下，点完却真的又下了一遍」。
+    func status(for prompt: ClipboardPrompt) -> ClipboardPromptStatus {
+        var occupied = occupiedKeys()
+        var status = ClipboardPromptStatus(total: prompt.urls.count)
+        var seen = Set<String>()
+        for url in prompt.urls {
+            let key = key(of: url)
+            guard seen.insert(key).inserted else { continue }   // 同一批里重复的算一条
+            switch occupied[key] {
+            case .running: status.running += 1
+            case .downloaded: status.downloaded += 1
+            case nil:
+                occupied[key] = .running                        // 同一批里后面的重复项按「正在下」算
+            }
+        }
+        return status
+    }
+
     /// 调试用：`D2M_YT_URL=<链接>` 时把这条链接直接入队。
     /// 手机没法从命令行点按钮，而 YouTube 这条链路要等 1~3 分钟、还真的花钱，
     /// 想验一次就只能让代码自己把整条路走完、把结论打进日志。
@@ -191,16 +228,18 @@ final class ConversionService: ObservableObject {
     }
 
     /// 把一批链接入队。已经在下载中、或已经下过的直接跳过，不重复下载。
+    ///
+    /// 去重按 `MediaSource.dedupeKey` 算，不按 URL 原串：同一个 YouTube 视频换个写法
+    /// （`youtu.be/ID` ↔ `watch?v=ID&si=…`）必须算同一条，否则会重复开 run、重复扣钱。
     private func enqueue(urls: [URL]) async -> SubmitOutcome {
         guard !urls.isEmpty else { return SubmitOutcome() }
 
-        // 已在处理中的同一链接不再重复提交，避免并发下重复下载
-        var inFlight = Set(jobs.filter { $0.state.isActive }.map(\.sourceURL))
+        var existing = occupiedKeys()
         var seenInBatch = Set<String>()
         var outcome = SubmitOutcome()
 
         for url in urls {
-            let key = url.absoluteString
+            let key = key(of: url)
             // 同一批里重复粘贴的同一条链接，静默去重
             guard seenInBatch.insert(key).inserted else { continue }
 
@@ -211,18 +250,15 @@ final class ConversionService: ObservableObject {
                 continue
             }
 
-            if inFlight.contains(key) {
-                outcome.running += 1
+            // 「正在下」和「下过了」分开报：用户需要知道是「别急，正在下」还是「已经有了、白贴了」。
+            if let state = existing[key] {
+                if state == .running { outcome.running += 1 } else { outcome.downloaded += 1 }
                 continue
             }
-            // 已经下载并入库的不再重复下载
-            if library.contains(sourceURL: key) {
-                outcome.downloaded += 1
-                continue
-            }
-            inFlight.insert(key)
+            // 同一批里的后来者按「正在下载」算，跟下一批再贴这条链接的说法一致
+            existing[key] = .running
 
-            var job = Job(id: UUID().uuidString, source: source, sourceURL: key)
+            var job = Job(id: UUID().uuidString, source: source, sourceURL: url.absoluteString)
             job.fileName = "\(job.id).\(source.fileExtension)"
             jobs.insert(job, at: 0)
             gate.enqueue(job.id)
@@ -231,6 +267,29 @@ final class ConversionService: ObservableObject {
 
         pump()
         return outcome
+    }
+
+    private enum ExistingState { case running, downloaded }
+
+    /// 当前已经被占用的去重键 → 状态。队列（正在跑的）和资料库（下过的）都算。
+    /// 队列后写，所以同一键两处都有时报「正在下载」——那是用户更需要的说法。
+    private func occupiedKeys() -> [String: ExistingState] {
+        var states: [String: ExistingState] = [:]
+        for item in library.items {
+            guard let raw = item.sourceURL, let url = URL(string: raw) else { continue }
+            states[key(of: url)] = .downloaded
+        }
+        for job in jobs where job.state.isActive {
+            guard let url = URL(string: job.sourceURL) else { continue }
+            states[key(of: url)] = .running
+        }
+        return states
+    }
+
+    /// 一条链接的去重键。认不出来源的用原串兜底 —— 兜底成空串的话，
+    /// 所有不认识的链接会共用一个键、被当成同一条。
+    private func key(of url: URL) -> String {
+        MediaSource.of(url)?.dedupeKey(for: url) ?? "raw:" + url.absoluteString
     }
 
     func remove(jobID: String) {

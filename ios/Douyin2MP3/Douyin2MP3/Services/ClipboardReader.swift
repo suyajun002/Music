@@ -19,12 +19,16 @@ enum ClipboardReader {
     ///
     /// 这里返回的是**一段真实的分享文本**而不是解析结果，所以后面的抠链接、去重、弹框全走真实代码路径。
     /// 链接故意用不存在的短链：万一倒计时真自动下载了，也只会失败，不会往资料库里塞东西。
+    /// YouTube 那条**也是假 ID**（真 ID 会真花钱跑 Apify），但它能把「认出来源 → 含 YouTube 要收费」
+    /// 这条新路径走通、看到确认框上的价钱提示。
     /// 用法：`devicectl device process launch --environment-variables '{"D2M_CLIPBOARD_DEMO":"1"}' com.yajun.douyin2mp3`
     static var demoText: String? {
         guard ProcessInfo.processInfo.environment["D2M_CLIPBOARD_DEMO"] == "1" else { return nil }
         return """
         7.43 复制打开抖音，看看【演示作品】 https://v.douyin.com/D2M-DEMO-1/ 复制此链接，打开Dou音搜索
         https://www.douyin.com/video/7300000000000000000。
+        分享一个 https://youtu.be/D2M-DEMO-YT 给你
+        淘宝的 https://item.taobao.com/item.htm?id=1 不用管
         https://v.douyin.com/D2M-DEMO-3/
         """
     }

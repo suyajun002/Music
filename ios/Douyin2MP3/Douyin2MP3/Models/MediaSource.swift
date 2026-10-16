@@ -40,6 +40,33 @@ enum MediaSource: String, CaseIterable {
         guard let host = host?.lowercased() else { return nil }
         return hostSuffixes.first { host == $0.suffix || host.hasSuffix("." + $0.suffix) }?.source
     }
+
+    /// 去重用的「同一条内容」标识。
+    ///
+    /// **不能拿 URL 原串当键。** 同一个 YouTube 视频能贴成好几种写法：
+    /// `youtu.be/ID`、`www.youtube.com/watch?v=ID`、`music.youtube.com/watch?v=ID`、
+    /// 再挂一串 `?si=` 分享跟踪参数、或者末尾多个斜杠 —— 四种写法四个键，
+    /// 就会开四次 Apify run、**同一首歌重复扣四份钱**。所以 YouTube 一律收敛到视频 ID。
+    ///
+    /// 抖音短链（`v.douyin.com/xxx`）离线还原不出作品 ID（得先请求一次跳转），
+    /// 只能退一步规范化 URL：域名小写、去掉 `www.`、去掉查询串和结尾斜杠。
+    /// 分享文案里带的 `?ug_source=` 之类就落在这条上。
+    func dedupeKey(for url: URL) -> String {
+        if self == .youtube, let id = YouTubeExtractor.videoID(of: url) {
+            return "youtube:v\(id)"
+        }
+        return "\(rawValue):\(Self.normalizedURLString(url))"
+    }
+
+    /// 规范化后的 URL 串。**路径大小写必须保留**：抖音短链的路径是区分大小写的
+    /// base62 码，转小写会把两条不同的链接并成一条、直接少下一首。
+    static func normalizedURLString(_ url: URL) -> String {
+        var host = (url.host ?? "").lowercased()
+        if host.hasPrefix("www.") { host.removeFirst(4) }
+        var path = url.path
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return host + path
+    }
 }
 
 /// 从一段文本里抠链接。分享文案、剪贴板内容都是「一段话里夹一条链接」，

@@ -94,7 +94,7 @@ triggers:
 - `URL(string:)` 之外，抠视频 ID 的正则要覆盖 `youtu.be/`、`/shorts/`、`/embed/`、`?v=` 四种；长度必须正好 11 位，多了少了都算认不出。纯播放列表（只有 `list=`）没有 ID，不认。
 - 域名路由在 `Models/MediaSource.swift`，匹配规则是「**等于该域名 或 以 `.该域名` 结尾**」——**不能用 `contains`**，否则 `douyin.com.evil.example` 会被当成抖音。
 
-**不花命令行验证**：`swiftc -O Services/MediaExtracting.swift Models/MediaSource.swift Services/YouTubeExtractor.swift Services/DouyinExtractor.swift Services/JSONEscapes.swift main.swift -o yttest`（`DouyinExtractor.swift` 是纯 Foundation，可以拉进来提供 `DouyinConfig`，省得写桩；`YouTubeExtractor` 里解析用的 `ResultItem(json:)` 是 `internal`，命令行直接喂真实 JSON）。49 项：来源路由、扩展名/计费、视频 ID 正则、抠链接、Apify 响应解析（成功 / 失败 / 空 / 垃圾地址）、run 状态终态、补 token 重试、进度换算、mp3 魔数校验。
+**不花命令行验证**：`swiftc -O Services/MediaExtracting.swift Models/MediaSource.swift Services/YouTubeExtractor.swift Services/DouyinExtractor.swift Services/JSONEscapes.swift main.swift -o yttest`（`DouyinExtractor.swift` 是纯 Foundation，可以拉进来提供 `DouyinConfig`，省得写桩；`YouTubeExtractor` 里解析用的 `ResultItem(json:)` 是 `internal`，命令行直接喂真实 JSON）。57 项：来源路由、扩展名/计费、视频 ID 正则、抠链接、**去重键**（同一个视频五种写法算一条、抖音短链路径大小写不能抹平）、Apify 响应解析（成功 / 失败 / 空 / 垃圾地址）、run 状态终态、补 token 重试、进度换算、mp3 魔数校验。
 **花钱的端到端验证**：`D2M_YT_URL=<链接>` 环境变量起 App（`ConversionService.submitDemoLinkIfRequested()`）走真实 Apify 链路，**跑之前先问用户**（一次约 ¥0.5）。
 
 ## 通用：命令行构建并安装到真机
@@ -107,6 +107,7 @@ triggers:
 4. **拿团队 ID**：`security find-certificate -c "Apple Development: <email>" -p | openssl x509 -noout -subject`，取 `OU=`。
 5. **构建**：`xcodebuild -project X.xcodeproj -scheme X -destination 'generic/platform=iOS' -configuration Debug -allowProvisioningUpdates -derivedDataPath <稳定目录> build`
 6. **安装**：`xcrun devicectl device install app --device <UDID> <X.app>`（UDID 用 `xcrun devicectl list devices` 查）
+   - ⚠️ **装之前必须先确认 App 里没有正在下载的任务，有就等它下完再装。严格遵循。** 安装会终止正在运行的 App，而下载是进程内的 `URLSessionDownloadTask`：一装就断，抖音那条得重下，**YouTube 那条更贵 —— 已经开出去的 Apify run 照收费，钱花了歌没拿到**。确认方式：直接问用户（屏幕上就有「进行中 N · 等待 N」），不要靠猜、不要图快先装再说；同理，`process launch --terminate-existing` 也不要对着有下载在跑的 App 用。
 7. **启动**：`xcrun devicectl device process launch --device <UDID> <bundleID>`
 8. **首次必须由用户在手机上信任证书**：设置 → 通用 → VPN与设备管理 → 开发者App → 信任。否则报 “invalid code signature / profile has not been explicitly trusted”。这一步只能用户点，别尝试代劳。
 9. **免费个人团队 7 天过期**：到期 App 打不开，重跑第 5、6 步即可。
@@ -175,6 +176,32 @@ triggers:
 - 顺序不能反：`.task` 里先 `adoptExternalMedia()` 再 `resumeLastPlayback(from: library.items)`，不然刚收进来的外部文件还不在 `items` 里，续播找不到。
 - 旧版本的单条存档键 `playback.lastElapsed` 在 `init()` 的 `migrateLegacySavePoint()` 里并进表、随即删掉，所以升级那一刻不会白丢一次位置。
 
+## 同一个链接不会重复下载（去重）
+
+三层，都在 `ConversionService.enqueue`：
+
+1. **同一批内的重复**：一条链接在一段文本里出现两次，静默去重。
+2. **正在跑的任务**：队列里 `state.isActive`（`queued` / `running`）已占住这个键 → 跳过，计 `running`。
+3. **已在资料库**：下过的 → 跳过，计 `downloaded`。
+
+⚠️ **键不能是 URL 原串，必须是「同一条内容」的标识**（`MediaSource.dedupeKey(for:)`）。同一个 YouTube 视频能贴成 `youtu.be/ID`、`www.youtube.com/watch?v=ID`、`music.youtube.com/watch?v=ID`、挂一串 `?si=` 跟踪参数、`/shorts/ID` —— 原串当键就是五个键，**开五次 Apify run、同一首歌扣五份钱**。所以 YouTube 一律收敛到视频 ID（复用 `YouTubeExtractor.videoID(of:)`）。
+
+- 抖音短链（`v.douyin.com/xxx`）离线还原不出作品 ID（要请求一次跳转），只能退一步规范化 URL：域名小写、去掉 `www.`、去掉查询串和结尾斜杠。**路径大小写必须保留** —— 短链路径是区分大小写的 base62 码，转小写会把两条不同的链接并成一条、直接少下一首。
+- 资料库里存的是当初那次的 URL 原串，所以**查库时也要过一遍同一个键函数**，否则「上次是短链、这次是长链」照样重复下。`MediaLibrary.contains(sourceURL:)` 那个按原串比的旧方法已经删掉了 —— 别再加回来，两套口径必然对不上。
+- 确认框上要**提前**说清楚（`ConversionService.status(for:)` → `ClipboardPromptStatus`）：几条已在库、几条正在下、这次实际新下几条。它和入队**共用同一套键**，所以预告的数字和点下去的结论必然一致；各算一套就会出现「框上说不会重复下，点完却真又下了一遍」。全都下过时不倒计时（数 5 秒然后什么都不做，比直接说明白更让人犯嘀咕），圈里按钮变「知道了」。
+- **失败的任务不算占位**：允许重贴重试，这是有意为之。
+
+## 「粘贴链接」按钮点了没反应
+
+三个坑都在 `ConvertView.paste()` 里，历史上它「点了没反应」就是踩了这些：
+
+1. `UIPasteboard.general.string` 在用户**拒绝过系统粘贴授权**之后会一直返回 nil（iOS 16 起的系统框点过「不允许」就记住了）→ 按钮永远静默无反应。要提示「可能被拒绝了粘贴授权（设置 → Music → 从其他 App 粘贴 → 允许），或者剪贴板里不是文字」。
+2. 剪贴板里不是文本（图片、文件）时同样是 nil。
+3. 粘进来的内容和输入框里**现有的一模一样**时，`input` 没变 → `.task(id: input)` 不触发 → 看着就像按钮坏了。这种情况要自己直接提交一次。
+
+- 提交入口统一到 `submit(_:)`：手输（`.task(id:)` 防抖）、按钮、剪贴板自动识别都走它，结论口径只有一套。
+- 结论文案里要把「跳过」两个字写出来：「N 条已在资料库，跳过」比「N 条已在资料库」更能回答用户心里那句「我这次没重复提交吧」。
+
 ## 文本解码（标题里的 \u002F）
 
 - ⚠️ `JSONSerialization.jsonObject(with:)` **默认不接受顶层是字符串片段**，必须带 `options: [.fragmentsAllowed]`；少了它，解 JSON 字符串永远返回 `nil`，标题就一直显示成 `开车\u002F健身`（旧代码就是这个毛病，`?? raw` 兜底把未解码文本直接展示出来了）。
@@ -217,7 +244,7 @@ triggers:
 - ⚠️ **截图里读小字别硬猜**：确认框这类半透明 `Material` 卡片，像素取样分不出「环的颜色」和「卡片本身透出的背景色」（实测卡片的青色调来自背景透色，不是控件颜色）。要判断行为就让代码自己把结论打进日志，别靠肉眼看 3 像素高的字。
 - ⚠️ **续播/切歌这类「要点一下才能看到」的行为，用 `D2M_JUMP_DEMO=1` 验**（`MediaPlayer.runJumpDemoIfRequested()`，`RootView` 的 `.task` 里调）：自动「听 6 秒 → 切下一首 → 再 6 秒 → 切回上一首」，全走真实链路。**别直接把 `previous()` 写进演示** —— 它带「播放 3 秒内才真切歌」的规矩，6 秒后调它只会回到本首开头、什么都验不到，要直接 `index -= 1; startCurrent(restoringPosition: true)`。实测输出：`存档《1小时…》：933s` → `切歌续播：《1小时…》从 933s 接上`，正好接回离开的那一刻。
 - 截真机屏幕（不用 WebDriverAgent）：`xcrun devicectl device capture screenshot --device <UDID> --destination /tmp/x.png`。
-- 安装：`devicectl install` 成功后必须再 `process launch` 一次，才算「装完能跑」。
+- 安装：`devicectl install` 成功后必须再 `process launch` 一次，才算「装完能跑」。**但装之前先确认没有正在跑的下载**（见「通用：命令行构建并安装到真机」第 6 条）—— 安装会终止 App，YouTube 那种已经花钱开了 run 的任务一断就白花。
 - ⚠️ 真机**远程点击不可靠**：WebDriverAgent 这类远程控制方案依赖设备已信任开发者证书，证书没信任时直接起不来，反复重试很费时（每次探测约 20 秒）。命令行能稳定做到的是**安装、启动、截图**；凡是要点一下才能看到的（点歌、看迷你条、收键盘）就请用户手点，然后自己截图核对。
 
 ## 注意
