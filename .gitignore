@@ -8,5 +8,9 @@ xcuserdata/
 node_modules/
 *.log
 
+# 密钥（Apify token 之类一律不进仓库）
+.env
+.env.*
+
 # macOS
 .DS_Store
