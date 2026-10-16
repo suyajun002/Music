@@ -205,13 +205,22 @@ final class ConversionService: ObservableObject {
     /// 手机没法从命令行点按钮，而 YouTube 这条链路要等 1~3 分钟、还真的花钱，
     /// 想验一次就只能让代码自己把整条路走完、把结论打进日志。
     /// 走的是完整真实链路（提交 → 轮询 → 下载 → 入库），不造假数据。
+    ///
+    /// **同一条链接连交两次**（第二次是故意的）：去重是「不会重复扣钱」的唯一保证，
+    /// 光看代码说「应该不会重复」不算数，得让真机自己报出第二次被挡下来了。
+    /// 想验这条就传一条**抖音**链接（不花钱）：YouTube 那种第二次真被挡住才重要、
+    /// 但万一没挡住就是真扣一次钱，不适合当回归检查。
     func submitDemoLinkIfRequested() async {
         guard let raw = ProcessInfo.processInfo.environment["D2M_YT_URL"],
               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
         DouyinDebug.log("演示链接入队：\(raw)")
-        let outcome = await enqueue(from: raw)
-        DouyinDebug.log("演示链接入队结果：新入队 \(outcome.queued)，已在库 \(outcome.downloaded)，不支持 \(outcome.unsupported)")
+        let first = await enqueue(from: raw)
+        DouyinDebug.log("演示链接第 1 次：新入队 \(first.queued)，已在库 \(first.downloaded)，正在下 \(first.running)，不支持 \(first.unsupported)")
+
+        let second = await enqueue(from: raw)
+        DouyinDebug.log("演示链接第 2 次（同一条，应全部被挡）：新入队 \(second.queued)，已在库 \(second.downloaded)，正在下 \(second.running)，不支持 \(second.unsupported)")
+        DouyinDebug.log(second.queued == 0 ? "去重自检：通过，同一条没有重复提交" : "去重自检：**失败**，同一条被重复提交了")
     }
 
     // MARK: - 提交
