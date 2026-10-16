@@ -32,6 +32,7 @@ final class MediaPlayer: ObservableObject {
         addTimeObserver()
         observePlaybackStatus()
         registerRemoteCommands()
+        migrateLegacySavePoint()
     }
 
     var hasNext: Bool { index + 1 < queue.count }
@@ -60,39 +61,114 @@ final class MediaPlayer: ObservableObject {
         artworkLoader = artwork
     }
 
+    /// 从资料库点某一首进来（以及冷启动续播）：这一首听过一半的话，接着上次的地方放。
     func play(items: [MediaItem], startIndex: Int) {
         queue = items
         index = max(0, min(startIndex, max(0, items.count - 1)))
-        startCurrent()
+        startCurrent(restoringPosition: true)
     }
 
     func play(item: MediaItem) {
         play(items: [item], startIndex: 0)
     }
 
+    // MARK: - 收听位置存档
+
+    /// 上次放的是哪首。放在 UserDefaults 而不是资料库里：这是「播放器状态」，跟媒体文件本身无关。
+    private static let lastIDKey = "playback.lastItemID"
+    /// 每一首各自听到哪（条目 id → 秒数）。**按条目分开存**，不是只存一个位置：
+    /// 切走再切回来要接着听，只存「最后一首」的话回来就从头了。
+    private static let positionsKey = "playback.positions"
+    /// 旧版本的单条存档键，只为了让升级那一刻不白丢位置，见 `migrateLegacySavePoint()`。
+    private static let lastElapsedKey = "playback.lastElapsed"
+
+    private var savedPositions: [String: Double] {
+        get { UserDefaults.standard.dictionary(forKey: Self.positionsKey) as? [String: Double] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: Self.positionsKey) }
+    }
+
+    /// 这一首听到哪了（没听过返回 nil）。
+    func savedPosition(for id: String) -> Double? { savedPositions[id] }
+
+    /// 旧版本只存「单独一个位置」，升级后并进按条目存的表里，免得上次听到的地方白丢一次。
+    /// 迁完立刻删掉旧键，所以只可能跑一次。
+    private func migrateLegacySavePoint() {
+        let defaults = UserDefaults.standard
+        guard let legacyID = defaults.string(forKey: Self.lastIDKey),
+              defaults.object(forKey: Self.lastElapsedKey) != nil else { return }
+        let legacy = defaults.double(forKey: Self.lastElapsedKey)
+        if legacy > 1 {
+            var map = savedPositions
+            map[legacyID] = legacy
+            savedPositions = map
+        }
+        defaults.removeObject(forKey: Self.lastElapsedKey)
+    }
+
+    // MARK: - 冷启动续播
+
+    /// 续播入口：**只在冷启动调一次**（`RootView` 的 `.task`），切回前台不要调 ——
+    /// 从后台回来时音频本来就在放，再调一次会把正在听的那首从头/从存档点打断。
+    ///
+    /// 队列口径 = 整个资料库，这样续播起来之后「上一首/下一首」和手动点播一致。
+    func resumeLastPlayback(from items: [MediaItem]) {
+        // 已经有东西在播就别抢（比如后台恢复场景），空库也没什么可放的
+        guard currentID == nil, !items.isEmpty else { return }
+
+        // 这里只读「上次放的是哪首」；「听到哪」由 `startCurrent` 里的 `restorePosition` 统一负责。
+        // 不在这里自己 seek —— 两处都 seek 会互相打架，而且那时候 `duration` 还没加载出来。
+        let savedID = UserDefaults.standard.string(forKey: Self.lastIDKey)
+        // 上次那首被删了就退回第一首：用户要的是「打开就有声」，不是「精确回到某首」
+        let start = savedID.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
+
+        DouyinDebug.log(savedID != nil && items[start].id == savedID
+            ? "冷启动续播：接上次那首《\(items[start].title)》"
+            : "冷启动续播：没有存档（或那首已被删），从第一首《\(items[start].title)》开始")
+        play(items: items, startIndex: start)
+    }
+
+    /// 记下当前这首听到哪了。不逐帧写盘：切歌、暂停、进后台，以及播放中每 5 秒兜底一次。
+    func savePosition() {
+        guard let id = currentID, !isScrubbing else { return }
+        var map = savedPositions
+        // 停在片尾就记 0：否则下次切回来一进去就是「已经放完」，直接跳下一首
+        let position = (duration > 0 && elapsed >= duration - 1) ? 0 : max(0, elapsed)
+        map[id] = position
+        savedPositions = map
+        UserDefaults.standard.set(id, forKey: Self.lastIDKey)
+        DouyinDebug.log("存档《\(currentTitle)》：\(Int(position))s / \(Int(duration))s")
+    }
+
     func next() {
         guard hasNext else { return }
         index += 1
-        startCurrent()
+        startCurrent(restoringPosition: true)
     }
 
     func previous() {
         // 音乐 App 的习惯：播放 3 秒内按上一首才真的切歌，否则回到开头
         if elapsed > 3, currentID != nil {
-            player.seek(to: .zero)
+            seek(toSeconds: 0)
             return
         }
         guard hasPrevious else {
-            player.seek(to: .zero)
+            seek(toSeconds: 0)
             return
         }
         index -= 1
-        startCurrent()
+        startCurrent(restoringPosition: true)
     }
 
-    private func startCurrent() {
+    /// - Parameter restoringPosition: 换成这一首后要不要接上它上次听到的地方。
+    ///   手动切歌要接（「切走再切回来不用重听」）；**放完自动跳下一首要传 false** ——
+    ///   一首歌唱完了自然想听下一首的开头，这时候把下一首拉到二十分钟处是惊吓不是贴心。
+    private func startCurrent(restoringPosition: Bool) {
         guard queue.indices.contains(index) else { return }
         let item = queue[index]
+
+        // 存档「正要离开的那首」，必须在 `currentID` 被改写**之前**：
+        // 位置是挂在 currentID 上的，换掉之后就再也取不到了。
+        savePosition()
 
         player.replaceCurrentItem(with: AVPlayerItem(url: fileResolver(item)))
         currentID = item.id
@@ -105,6 +181,38 @@ final class MediaPlayer: ObservableObject {
         player.play()
         isPlaying = true
         updateNowPlaying()
+        if restoringPosition { restorePosition(for: item) }
+    }
+
+    /// 调试用：`D2M_JUMP_DEMO=1` 时自动「听 6 秒 → 下一首 → 再 6 秒 → 切回来」。
+    /// 手机没法从命令行点按钮，「切走再切回来接上位置」这条路径在真机上就没法验，
+    /// 只能让代码自己走一遍、把结论打进日志。链路（存档 → 切歌 → 接位置）全走真实实现，不造假数据。
+    func runJumpDemoIfRequested() async {
+        guard ProcessInfo.processInfo.environment["D2M_JUMP_DEMO"] == "1" else { return }
+        guard currentID != nil else {
+            DouyinDebug.log("跳转演示：没有在放的东西，跳过")
+            return
+        }
+        try? await Task.sleep(for: .seconds(6))
+        DouyinDebug.log("跳转演示：切下一首")
+        next()
+        try? await Task.sleep(for: .seconds(6))
+        DouyinDebug.log("跳转演示：切回上一首（应该接上刚才离开的位置）")
+        // 不走 `previous()`：那里有「播放 3 秒内按上一首才真切歌」的规矩，
+        // 而这里已经听了 6 秒，会被它当成「回到本首开头」而不是切回去。
+        guard hasPrevious else { return }
+        index -= 1
+        startCurrent(restoringPosition: true)
+    }
+
+    /// 接上这一首上次听到的地方。门槛 1 秒：比这更短说明上次基本没听，从头放更符合直觉。
+    private func restorePosition(for item: MediaItem) {
+        guard let saved = savedPositions[item.id], saved > 1 else { return }
+        // 存档时停在片尾本来就记 0（见 `savePosition`），这里是防旧数据的第二道闸
+        let total = item.durationSec ?? 0
+        guard total <= 0 || saved < total - 1 else { return }
+        seekDirectly(toSeconds: saved)
+        DouyinDebug.log("切歌续播：《\(item.title)》从 \(Int(saved))s 接上")
     }
 
     func toggle() {
@@ -117,9 +225,72 @@ final class MediaPlayer: ObservableObject {
         }
     }
 
+    /// 直接落到 AVPlayer（进度条松手、遥控快进快退都走这里）。
+    /// 三处都不能省：
+    /// 1. `elapsed` 乐观更新 —— `player.seek` 是异步的，不等它回来就写，
+    ///    否则周期观察者下一次回写的是**旧**位置，进度条松手就弹回去。
+    /// 2. `toleranceBefore/After: .zero` —— 默认容差是 `.positiveInfinity`，语义上是「就近落点」（视频可能落到关键帧）。
+    ///    实测本机这些 mp3/mp4 默认容差也精确落点，所以它**不是**「拖不动」的原因；
+    ///    零容差只是把落点钉死、手感可预期，代价实测可忽略（2 小时 MP3 单次 seek ~0ms）。
+    /// 3. 立刻 `updateNowPlaying()` —— 锁屏/控制中心的进度要跟着走，不然得等 0.5s。
     func seek(to ratio: Double) {
         guard duration > 0 else { return }
-        player.seek(to: CMTime(seconds: duration * min(max(ratio, 0), 1), preferredTimescale: 600))
+        let target = CMTime(seconds: duration * min(max(ratio, 0), 1), preferredTimescale: 600)
+        elapsed = target.seconds
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        updateNowPlaying()
+    }
+
+    /// 按绝对秒数跳（锁屏进度条、遥控命令用）。
+    func seek(toSeconds seconds: Double) {
+        seek(to: duration > 0 ? seconds / duration : 0)
+    }
+
+    /// 直接落一个绝对秒数，不经过 `progress`。
+    /// 续播要用它：那一刻 `duration` 可能还是 0（`MediaItem.durationSec` 是可选的，
+    /// 真实时长要等 AVPlayerItem 加载完才知道），走 `seek(toSeconds:)` 会因为 `duration == 0` 直接返回、落不下去。
+    /// AVPlayer 会把这个 seek 挂起，等条目就绪后自己执行。
+    private func seekDirectly(toSeconds seconds: Double) {
+        let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+        elapsed = target.seconds
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        updateNowPlaying()
+    }
+
+    /// 相对当前位置快进/快退（负数即快退），锁屏的 ±15 秒按钮用。
+    /// 用播放器的真实时间算基准，不拿 `elapsed`：后者最多有 0.5 秒的滞后，连点会越点越偏。
+    func skip(by seconds: Double) {
+        let now = player.currentTime().seconds
+        let base = now.isFinite ? now : elapsed
+        seek(toSeconds: base + seconds)
+    }
+
+    // MARK: - 拖动进度条
+
+    /// 拖动期间为 true：UI 上的位置改由手指决定，周期观察者让位。
+    private var isScrubbing = false
+
+    /// 上次写续播存档的时间，用来把播放中的兜底存档节流到 5 秒一次。
+    private var lastSavedAt = Date.distantPast
+
+    /// 手指按住进度条。
+    func beginScrubbing() {
+        guard duration > 0 else { return }
+        isScrubbing = true
+    }
+
+    /// 手指移动：只改界面（进度条 + 时间标签），不碰 AVPlayer。
+    /// 逐帧 seek 会把播放器打成一串互相取消的请求，也没必要 —— 松手一次落到位。
+    func scrub(to ratio: Double) {
+        guard duration > 0 else { return }
+        elapsed = duration * min(max(ratio, 0), 1)
+    }
+
+    /// 松手：落到真实位置。
+    func endScrubbing() {
+        guard isScrubbing else { return }
+        isScrubbing = false
+        seek(to: progress)
     }
 
     func stop() {
@@ -150,14 +321,27 @@ final class MediaPlayer: ObservableObject {
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
+                // 正在拖进度条：这一轮的位置由手指说了算，别回写（回写就把进度条拽回去了），
+                // 也别在这里判「播完了」—— 拖到末尾不等于这首放完了。
+                guard !self.isScrubbing else { return }
                 self.elapsed = time.seconds.isFinite ? time.seconds : 0
                 if let itemDuration = self.player.currentItem?.duration.seconds,
                    itemDuration.isFinite, itemDuration > 0 {
                     self.duration = itemDuration
                 }
-                // 播完自动下一首
+                // 播完自动下一首。**不接上次位置**（见 `startCurrent(restoringPosition:)`）：
+                // 一首刚放完，下一首该从开头起，而不是跳到它上次被听到一半的地方。
                 if self.isPlaying, self.duration > 0, self.elapsed >= self.duration - 0.25 {
-                    if self.hasNext { self.next() }
+                    if self.hasNext {
+                        self.index += 1
+                        self.startCurrent(restoringPosition: false)
+                    }
+                }
+                // 播放中兜底存档：进程被系统直接杀掉（没走到暂停/进后台）时靠它。
+                // 不必每 0.5 秒都写盘，5 秒的粒度对这个用途足够。
+                if Date().timeIntervalSince(self.lastSavedAt) > 5 {
+                    self.lastSavedAt = Date()
+                    self.savePosition()
                 }
                 self.updateNowPlaying()
             }
@@ -173,6 +357,8 @@ final class MediaPlayer: ObservableObject {
                     self.isPlaying = true
                 case .paused:
                     self.isPlaying = false
+                    // 暂停是最容易「一停就是几小时、然后进程被杀掉」的时刻，这里必须存
+                    self.savePosition()
                 default:
                     // waitingToPlayAtSpecifiedRate：只是在等待缓冲，先保持现状
                     break
@@ -210,7 +396,31 @@ final class MediaPlayer: ObservableObject {
             Task { @MainActor in self?.previous() }
             return .success
         }
+        // 锁屏 / 控制中心的**进度条**：不注册这个命令，系统就不会把拖动接进来 ——
+        // 表现为「锁屏上进度条根本拖不动」。听长音频（1~2 小时的串烧）时这是唯一的快进手段。
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let position = (event as? MPChangePlaybackPositionCommandEvent)?.positionTime else {
+                return .commandFailed
+            }
+            Task { @MainActor in self?.seek(toSeconds: position) }
+            return .success
+        }
+        // 同上：不注册就没有 ±15 秒按钮（锁屏、控制中心、AirPods 的双击/三击都走这两个命令）。
+        // 注意 preferredIntervals 是 [NSNumber]：整数字面量能隐式桥接，Double 不行，必须显式包一层。
+        center.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
+        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
+        center.skipForwardCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.skip(by: Self.skipInterval) }
+            return .success
+        }
+        center.skipBackwardCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.skip(by: -Self.skipInterval) }
+            return .success
+        }
     }
+
+    /// 遥控快进/快退的步长（秒）。
+    private static let skipInterval = 15.0
 
     private func updateNowPlaying() {
         guard currentID != nil else { return }

@@ -95,9 +95,14 @@ struct PlayerView: View {
 
     private var scrubber: some View {
         VStack(spacing: 2) {
+            // 拖动只改界面（`scrub`），松手才落到播放器（`endScrubbing`）。
+            // 按住期间周期观察者不写 `elapsed`，进度条才会跟着手指走、松手不弹回。
             Slider(
-                value: Binding(get: { player.progress }, set: { player.seek(to: $0) }),
-                in: 0...1
+                value: Binding(get: { player.progress }, set: { player.scrub(to: $0) }),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    if editing { player.beginScrubbing() } else { player.endScrubbing() }
+                }
             )
             HStack {
                 Text(player.elapsedText)
