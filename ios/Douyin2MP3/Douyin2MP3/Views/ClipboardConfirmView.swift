@@ -1,4 +1,4 @@
-// 用途：剪贴板确认框。列出从剪贴板识别到的抖音链接，**不点任何东西**，倒计时走完自动入队；
+// 用途：剪贴板确认框。列出从剪贴板识别到的链接，**不点任何东西**，倒计时走完自动入队；
 // 不想下就点中间的「忽略」。复制完链接就去忙别的，回来不该白跑一趟。
 //
 // 为什么不用 `.alert`：系统弹窗只有一排按钮，塞不下「外圈倒计时环 + 圈里一个按钮」，
@@ -10,6 +10,11 @@ struct ClipboardConfirmView: View {
     /// 用户点了圈里的「忽略」——具体做什么由调用方决定。
     let onIgnore: () -> Void
     let onConfirm: () -> Void
+    /// 这批链接**当前下不了**时的原因（比如 YouTube 链接但还没填 Apify token）。
+    /// 非空就不倒计时自动入队 —— 走下不去也只会白跑一趟，还得让用户自己发现是缺 token。
+    /// 圈里的按钮改成「去设置」，把人送到能解决问题的地方。
+    let blockedReason: String?
+    let onFix: () -> Void
 
     /// 倒计时总秒数。这是产品节奏，不是取流参数，所以留在视图里（对齐 MediaPlayer.skipInterval 的做法）。
     private static let countdownSeconds = 5
@@ -38,8 +43,12 @@ struct ClipboardConfirmView: View {
         // `id:` 挂 prompt.id，且进任务先把秒数复位——同一个 prompt 被重新推上来时（比如
         // 切回前台又识别了一遍剪贴板），倒计时从头开始，而不是拿着上一轮的 0 秒立刻重复下载。
         .task(id: prompt.id) {
-            DouyinDebug.log("确认框出现，开始 \(Self.countdownSeconds)s 倒计时")
             remaining = Self.countdownSeconds
+            guard blockedReason == nil else {
+                DouyinDebug.log("确认框：这批下不了（\(blockedReason ?? "")），不自动下载")
+                return
+            }
+            DouyinDebug.log("确认框出现，开始 \(Self.countdownSeconds)s 倒计时")
             while remaining > 0 {
                 try? await Task.sleep(for: .seconds(1))
                 if Task.isCancelled { return }
@@ -63,17 +72,18 @@ struct ClipboardConfirmView: View {
             }
 
             VStack(spacing: 8) {
-                // 一个圆圈：外圈是倒计时（随秒数一圈圈退掉），圈里就是「忽略」。
+                // 一个圆圈：外圈是倒计时（随秒数一圈圈退掉），圈里就是那个按钮。
                 ZStack {
                     // 底环：画满一圈，让「还剩多少」有个参照，不然弧短了像渲染坏了
                     Circle()
                         .stroke(Color.secondary.opacity(0.25), lineWidth: Self.ringWidth)
 
-                    // 倒计时弧：从 12 点方向顺时针，秒数越少弧越短
+                    // 倒计时弧：从 12 点方向顺时针，秒数越少弧越短。
+                    // 被挡住时画满一圈且不动 —— 它不是「还剩 0 秒」，而是「还没开始数」。
                     Circle()
                         .trim(from: 0, to: fraction)
                         .stroke(
-                            Color.accentColor,
+                            blockedReason == nil ? Color.accentColor : Color.orange,
                             style: StrokeStyle(lineWidth: Self.ringWidth, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
@@ -83,10 +93,15 @@ struct ClipboardConfirmView: View {
                     // 不要给它加 `role: .cancel`：那个角色会接系统的「取消」动作，
                     // 而这里唯一该发生的取消就是用户亲手点这个圈。
                     Button {
-                        DouyinDebug.log("忽略按钮被触发")
-                        onIgnore()
+                        if blockedReason == nil {
+                            DouyinDebug.log("忽略按钮被触发")
+                            onIgnore()
+                        } else {
+                            DouyinDebug.log("确认框：点「去设置」，转去填 token")
+                            onFix()
+                        }
                     } label: {
-                        Text("忽略")
+                        Text(blockedReason == nil ? "忽略" : "去设置")
                             .font(.headline)
                             .frame(width: Self.ringDiameter - 22, height: Self.ringDiameter - 22)
                             .background(Circle().fill(.quaternary))
@@ -95,9 +110,10 @@ struct ClipboardConfirmView: View {
                 }
                 .frame(width: Self.ringDiameter, height: Self.ringDiameter)
 
-                Text("\(remaining) 秒后自动下载")
+                Text(footnote)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(blockedReason == nil ? Color.secondary : Color.orange)
+                    .multilineTextAlignment(.center)
             }
         }
         .padding(20)
@@ -105,9 +121,10 @@ struct ClipboardConfirmView: View {
         .shadow(radius: 24, y: 8)
     }
 
-    /// 倒计时环已画出的比例：1 = 满圈，0 = 退没了。
+    /// 倒计时环已画出的比例：1 = 满圈，0 = 退没了。被挡住时恒为满圈。
     private var fraction: CGFloat {
-        CGFloat(remaining) / CGFloat(Self.countdownSeconds)
+        guard blockedReason == nil else { return 1 }
+        return CGFloat(remaining) / CGFloat(Self.countdownSeconds)
     }
 
     private var title: String {
@@ -115,7 +132,16 @@ struct ClipboardConfirmView: View {
         return count <= 1 ? "剪贴板里有 1 个链接" : "剪贴板里有 \(count) 个链接"
     }
 
+    /// 圈下面那行字：被挡住就说为什么，否则就是还剩几秒。
+    private var footnote: String {
+        if let blockedReason { return blockedReason }
+        var text = "\(remaining) 秒后自动下载"
+        if prompt.isPaid { text += "（要花钱）" }
+        return text
+    }
+
     /// 正文：列出识别到的链接（最多 4 条，再多就报个数），并说明去重规则。
+    /// YouTube 那条要**把费用写在框上** —— 倒计时走完就真扣钱，不该扣得不明不白。
     private var message: String {
         let shown = prompt.urls.prefix(4).map(\.absoluteString)
         var lines = shown.map { "· \($0)" }
@@ -124,6 +150,9 @@ struct ClipboardConfirmView: View {
         }
         lines.append("")
         lines.append("已经在资料库里、或正在下载的会自动跳过。")
+        if prompt.isPaid {
+            lines.append("含 YouTube：每首约 ¥0.5（Apify 按音频时长计费，失败不计费），一首 1~3 分钟。")
+        }
         return lines.joined(separator: "\n")
     }
 }

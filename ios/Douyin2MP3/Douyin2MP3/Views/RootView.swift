@@ -6,6 +6,10 @@ struct RootView: View {
     @EnvironmentObject private var player: MediaPlayer
     @Environment(\.scenePhase) private var scenePhase
 
+    /// 设置面板挂在根上：它有两个入口（「转视频」的齿轮、确认框里的「去设置」），
+    /// 挂在根上就不用两边各持一份 sheet。
+    @State private var showsSettings = false
+
     var body: some View {
         tabs
         .sheet(isPresented: Binding(
@@ -14,6 +18,9 @@ struct RootView: View {
         )) {
             PlayerView().environmentObject(service)
                 .environmentObject(player)
+        }
+        .sheet(isPresented: $showsSettings) {
+            SettingsView().environmentObject(service)
         }
         .overlay { clipboardConfirm }
         .onChange(of: scenePhase) { _, phase in
@@ -42,6 +49,7 @@ struct RootView: View {
             await service.adoptExternalMedia()
             player.resumeLastPlayback(from: service.library.items)
             await player.runJumpDemoIfRequested()
+            await service.submitDemoLinkIfRequested()
         }
         // 启动时识别一次剪贴板：确认框挂在这里，用户停在哪个页签都能看到。
         .task { await service.checkClipboard() }
@@ -57,11 +65,25 @@ struct RootView: View {
                 onIgnore: { service.dismissClipboardPrompt() },
                 // 点下载和倒计时到点都走这里，提交的是传进来的这份 prompt 本身，
                 // 不读 service.clipboardPrompt——confirm 会先把它置空，读当前状态等于把这次提交丢掉。
-                onConfirm: { Task { await service.confirm(prompt) } }
+                onConfirm: { Task { await service.confirm(prompt) } },
+                blockedReason: blockedReason(for: prompt),
+                // 「去设置」：先收起这个框，再开设置面板 —— 两个 sheet/overlay 叠着会打架
+                onFix: {
+                    service.dismissClipboardPrompt()
+                    showsSettings = true
+                }
             )
             // 换了 prompt（又复制了新链接）就重新开一轮倒计时，别沿用上一轮的剩余秒数
             .id(prompt.id)
         }
+    }
+
+    /// 这批链接现在下不了的原因。
+    /// YouTube 走 Apify 是要花钱的、而且没 token 就一定失败，所以不该让它跟着倒计时自动入队：
+    /// 5 秒后自动失败一次，用户还得自己猜到是缺 token。改成当场说明白、把人送去填。
+    private func blockedReason(for prompt: ClipboardPrompt) -> String? {
+        guard prompt.isPaid, !service.hasApifyToken else { return nil }
+        return "这批里有 YouTube 链接，还没填 Apify token —— 去「转视频」右上角设置里填一次。"
     }
 
     /// 有下载在跑时在「转视频」页签上挂个角标：
@@ -80,7 +102,7 @@ struct RootView: View {
                 LibraryView().miniPlayerInset()
             }
             Tab("转视频", systemImage: "arrow.down.circle") {
-                ConvertView().miniPlayerInset()
+                ConvertView(showsSettings: $showsSettings).miniPlayerInset()
             }
             .badge(downloadBadge)
         }

@@ -9,6 +9,9 @@ enum JobState: String, Codable {
 
 struct Job: Identifiable, Equatable {
     let id: String
+    /// 这条链接是抖音还是 YouTube。定下扩展名（mp4/mp3）、决定谁来取流，
+    /// 也是界面上「这条走的是哪条链路」的唯一依据。
+    let source: MediaSource
     let sourceURL: String
     var state: JobState = .queued
     var stage: String = "排队中"

@@ -38,35 +38,6 @@ enum DouyinError: LocalizedError {
     }
 }
 
-struct ExtractedVideo {
-    let videoID: String
-    let title: String?
-    let imageCount: Int
-}
-
-/// 取流进度。`fraction` 为 nil 表示服务器没给总大小（CDN 走 chunked），
-/// 这时只报已下载字节，由上层按「大小未知」渲染，而不是假装卡在某个百分比。
-struct FetchProgress {
-    var fraction: Double?
-    var bytesWritten: Int64 = 0
-    /// 当前在试的「清晰度·线路」说明，让用户看到正在换线路重试而不是卡死。
-    var attempt: String?
-
-    static func at(_ fraction: Double) -> FetchProgress {
-        FetchProgress(fraction: fraction, bytesWritten: 0)
-    }
-
-    /// 由下载字节换算进度：服务器给了总大小就给比例（0…1），
-    /// chunked 没给总大小就只有字节数，`fraction` 为 nil。
-    static func fromBytes(totalWritten: Int64, expected: Int64) -> FetchProgress {
-        guard expected > 0 else {
-            return FetchProgress(fraction: nil, bytesWritten: max(totalWritten, 0))
-        }
-        let ratio = Double(totalWritten) / Double(expected)
-        return FetchProgress(fraction: min(max(ratio, 0), 1), bytesWritten: totalWritten)
-    }
-}
-
 /// 取流所需的全部请求参数集中在这里，便于接口变化时统一调整。
 struct DouyinConfig {
     var mobileUserAgent =
@@ -83,12 +54,12 @@ struct DouyinConfig {
     var cookieRefreshInterval: TimeInterval = 300
     /// 壳页（风控）重试次数
     var shareRetryCount = 1
-    /// 认哪些域名为「抖音链接」。剪贴板闸门用它把无关链接（淘宝、B站…）挡在确认框之外，
-    /// 匹配规则是「等于该域名 或 以 .该域名 结尾」。
+    /// 认哪些域名为「抖音链接」。剪贴板闸门与来源路由都用它，是这一层的唯一事实来源。
     var douyinHostSuffixes = ["douyin.com", "iesdouyin.com"]
 }
 
-actor DouyinExtractor {
+/// 抖音取流：全程在手机上完成，不依赖任何后端。
+actor DouyinExtractor: MediaExtracting {
     private let config: DouyinConfig
     private var cookieJar: [String: String] = [:]
     private var lastCookieRefresh: Date?
@@ -111,20 +82,20 @@ actor DouyinExtractor {
     // MARK: - 主流程
 
     /// 取回流媒体文件并落到 destination；stage 回调用于向用户展示当前进度。
-    func fetchVideo(
+    func fetch(
         shareText: String,
         to destination: URL,
         onStage: @Sendable @escaping (String, FetchProgress) -> Void
-    ) async throws -> ExtractedVideo {
-        guard let url = Self.allURLs(in: shareText).first else { throw DouyinError.linkFormat }
-        return try await fetchVideo(url: url, to: destination, onStage: onStage)
+    ) async throws -> ExtractedMedia {
+        guard let url = LinkScanner.allURLs(in: shareText).first else { throw DouyinError.linkFormat }
+        return try await fetch(url: url, to: destination, onStage: onStage)
     }
 
-    func fetchVideo(
+    func fetch(
         url: URL,
         to destination: URL,
         onStage: @Sendable @escaping (String, FetchProgress) -> Void
-    ) async throws -> ExtractedVideo {
+    ) async throws -> ExtractedMedia {
         onStage("解析链接", .at(0.05))
         let videoID = try await resolveVideoID(from: url)
         DouyinDebug.log("作品 ID \(videoID)")
@@ -156,7 +127,7 @@ actor DouyinExtractor {
         }
 
         onStage("保存到手机", .at(0.98))
-        return ExtractedVideo(videoID: videoID, title: parsed.desc, imageCount: parsed.images.count)
+        return ExtractedMedia(videoID: videoID, title: parsed.desc)
     }
 
     // MARK: - 链接解析
@@ -165,7 +136,6 @@ actor DouyinExtractor {
         let firstURL = try Self.firstURL(in: shareText)
         return try await resolveVideoID(from: firstURL)
     }
-
     func resolveVideoID(from firstURL: URL) async throws -> String {
         let isShortLink = firstURL.host?.contains("v.douyin.com") == true
         let resolved: URL
@@ -195,39 +165,9 @@ actor DouyinExtractor {
         return last
     }
 
-    /// 抠出文本里所有 https 链接（去重、去掉结尾中文标点），支持一次粘贴多条分享文本。
-    static func allURLs(in text: String) -> [URL] {
-        let pattern = "https://[^\\s]+"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-
-        var urls: [URL] = []
-        for match in matches {
-            guard let range = Range(match.range, in: text) else { continue }
-            var raw = String(text[range])
-            while let last = raw.last, "，。；;、".contains(last) {
-                raw.removeLast()
-            }
-            guard let url = URL(string: raw), !urls.contains(url) else { continue }
-            urls.append(url)
-        }
-        return urls
-    }
-
-    /// 只要抖音自己的链接。`allURLs` 会认任何 https 链接，而剪贴板里放的多半是别的东西：
-    /// 不加这一层，复制个淘宝/B站链接打开 App 就会弹确认框，确认了还只会下失败。
-    static func douyinURLs(in text: String) -> [URL] {
-        allURLs(in: text).filter { isDouyinHost($0.host) }
-    }
-
-    static func isDouyinHost(_ host: String?) -> Bool {
-        guard let host = host?.lowercased() else { return false }
-        return DouyinConfig().douyinHostSuffixes.contains { host == $0 || host.hasSuffix("." + $0) }
-    }
-
-    /// 兼容旧调用：取第一条链接。
+    /// 取文本里第一条链接。抠链接本身跟来源无关，实现在 `LinkScanner`。
     static func firstURL(in text: String) throws -> URL {
-        guard let url = allURLs(in: text).first else { throw DouyinError.linkFormat }
+        guard let url = LinkScanner.allURLs(in: text).first else { throw DouyinError.linkFormat }
         return url
     }
 

@@ -29,8 +29,10 @@ final class MediaLibrary: ObservableObject {
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
-    func destination(for jobID: String) -> URL {
-        directory.appendingPathComponent("\(jobID).mp4")
+    /// 下载落点。扩展名由来源决定（抖音 mp4 / YouTube mp3）—— 入库后是「有画面」
+    /// 还是「只有封面」，只看这个名字（`MediaKind`）。
+    func destination(for jobID: String, source: MediaSource) -> URL {
+        directory.appendingPathComponent("\(jobID).\(source.fileExtension)")
     }
 
     func contains(videoID: String) -> Bool {

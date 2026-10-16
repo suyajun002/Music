@@ -4,6 +4,24 @@
 // 2) background 配置让锁屏/切后台时交给系统的 nsurlsessiond 继续下，不被挂起掐断。
 import Foundation
 
+/// 下载层的通用错误。放在这里、而不是复用某个来源的 `…Error`：
+/// 这是个通用下载器，它不该知道抖音或者 YouTube 的存在。
+/// `isUnauthorized` 给「这个地址要凭证才让读」的补救逻辑用（见 `YouTubeExtractor.download`）。
+enum DownloadError: LocalizedError {
+    case http(Int)
+
+    var isUnauthorized: Bool {
+        if case .http(let code) = self { return code == 401 || code == 403 }
+        return false
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .http(let code): return "下载失败：HTTP \(code)"
+        }
+    }
+}
+
 final class MediaDownloader: NSObject, URLSessionDownloadDelegate {
     static let shared = MediaDownloader()
 
@@ -93,7 +111,7 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate {
 
         // 后台会话拿不到异步返回值，状态码只能在这里读
         if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            finish(taskIdentifier: downloadTask.taskIdentifier, error: DouyinError.downloadRejected("HTTP \(http.statusCode)"))
+            finish(taskIdentifier: downloadTask.taskIdentifier, error: DownloadError.http(http.statusCode))
             return
         }
 
