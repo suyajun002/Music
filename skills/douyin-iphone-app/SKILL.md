@@ -92,6 +92,8 @@ triggers:
 - 分层：播放器不碰文件系统，由 `ConversionService` 注入 `configure(files:artwork:)`；视图只读状态、只发指令。
 - 后台播放：`scenePhase` 变 background 时把 `showsVideo` 置 false，`VideoSurface` 被移除即自动摘掉 `AVPlayerLayer`，音频不中断；回前台恢复画面。
 - ⚠️ **播放状态必须让视图单独观察**：`PlayerBar` / `PlayerView` / `LibraryView` 只持有 `ConversionService` 这个 `EnvironmentObject` 时，读 `service.player.isPlaying` 不会随播放器刷新 —— 图标会停在旧状态（点了暂停、按钮还显示暂停图标），全屏进度条也不动。App 入口要额外 `.environmentObject(service.player)`，这些视图各自声明 `@EnvironmentObject private var player: MediaPlayer`。
+- ⚠️ **进度条不能直接 `Binding(get: player.progress, set: player.seek)`**：`AVPlayer.seek` 是异步的、`elapsed` 又由 0.5s 周期观察者回写，`get` 与 `set` 不同步 → 拖的时候进度条被观察者拉回旧位置，手感就是「拖不动/没法快进」。正确做法：按住（`onEditingChanged(true)`）期间**停止观察者回写 `elapsed`**、`set` 只改 UI，松手（`false`）再落一次 seek；`seek` 里顺手乐观更新 `elapsed` 并 `updateNowPlaying()`。落点 `MediaPlayer.beginScrubbing/scrub(to:)/endScrubbing`。
+- ⚠️ **锁屏/控制中心要能快进，必须自己注册遥控命令**：只注册 play/pause/next/previous 的话，锁屏上既没有可拖的进度条、也没有 ±15 秒按钮 —— 表现为「锁屏上完全没法快进」（听 1~2 小时的长音频时这是唯一的快进手段）。要 `changePlaybackPositionCommand`（拖动进度条）+ `skipForward/BackwardCommand`（±15 秒，AirPods 双击/三击也走这两个）。`preferredIntervals` 类型是 `[NSNumber]`，`Double` 字面量**不能**隐式桥接，写 `[NSNumber(value: 15.0)]`。
 - ⚠️ **`isPlaying` 不能只手翻**：由 `player.observe(\.timeControlStatus)` 驱动（`.playing` → true、`.paused` → false、`.waitingToPlayAtSpecifiedRate` 保持现状），`toggle()` 也以 `player.timeControlStatus` 判断该 pause 还是 play。否则播完、被系统中断、缓冲时图标都和实际不符。
 
 ## 底部条与键盘（iOS 26）
@@ -105,6 +107,44 @@ triggers:
 - 界面不做识别：`ConversionService.autoSubmit(from:)` 返回结构化 `SubmitOutcome`（`queued` / `downloaded` / `running` 计数），视图只用它拼一行结论，并按 `hasLink` 决定清不清输入框、要不要提示「没识别到链接」。
 - 触发用 `.task(id: input)`：输入一变就重跑，天然防抖（450ms 后提交），不用手写 Timer。识别到链接就清空输入框并收起键盘，让用户直接看到下面跑起来的任务。
 - 去重要分两种，缺一不可：**正在下载**按 `sourceURL` 比 `jobs`；**已经下过**按 `sourceURL` 比资料库。后者需要 `MediaItem.sourceURL` —— 可选字段，旧 `library.json` 缺这个键会解成 nil（实测确认向后兼容），只是老条目无法参与去重。
+
+## 剪贴板识别 → 确认框（圆圈倒计时）
+
+- 打开 App / 切回前台识别剪贴板，落点 `Services/ClipboardReader.swift` + `ConversionService.checkClipboard()`。
+- 先用**不需要授权**的元数据筛：`changeCount` 变了 且 `hasStrings`/`hasURLs`，才真去读内容。iOS 16 起读 `UIPasteboard.general.string` **必然弹系统授权框**，没有静默 API；所以「值不值得读」必须靠元数据先判。不管读没读到都先记下 `changeCount`，否则被拒后每次启动都再弹一次，变成骚扰。
+- 只认抖音域名：`DouyinExtractor.douyinURLs(in:)` = `allURLs(in:)` 再过滤 `isDouyinHost`。复制个 B站/淘宝链接打开 App 不该弹框（确认了也只会下失败）。域名要按 `host == 域名` 或 `host.hasSuffix("." + 域名)` 比，**别用 `contains`**，否则 `douyin.com.evil.example` 会被当成抖音。
+- 确认框**不能用 `.alert`**：系统弹窗只有一排按钮，塞不下「外圈倒计时环 + 圈里一个按钮」，按钮标题也不能跟着秒数实时变（倒计时会卡在初始值）。落点 `Views/ClipboardConfirmView.swift`：外圈 `Circle().trim` 倒计时环，圈里是唯一的按钮「忽略」，不点就 5 秒后自动入队。
+- ⚠️ **别给框里的按钮加 `role: .cancel`**：那个角色接的是系统「取消」动作，配在这个自定义框上没有好处。
+- ⚠️ **`checkClipboard()` 要挡住重复推送**：启动时 `.task` 和 `scenePhase` 转 `.active` 会各调一次，同一批链接被推第二个 prompt 的话倒计时会从头再来、界面也会抖。判断用 `prompt.id != clipboardPrompt?.id`。
+- ⚠️ **倒计时不能只靠 `.task {}` 的初始值**：用 `.task(id: prompt.id)`，且进任务先 `remaining = countdownSeconds` 复位一次，否则同一个 prompt 被重新推上来时会拿着上一轮的 `0` 秒立刻重复下载。
+- 想真机看一眼这个框：`D2M_CLIPBOARD_DEMO=1`（`ClipboardReader.demoText`）喂一段**真实分享文本**，后面的抠链接/去重/弹框全走真实代码路径（比直接塞一个假 prompt 可信）。里面的链接是故意不存在的短链，倒计时真跑了也只会失败、不会往资料库里塞东西。用法：
+  `xcrun devicectl device process launch --device <UDID> --terminate-existing --console --environment-variables '{"D2M_CLIPBOARD_DEMO":"1","D2M_DEBUG":"1"}' <bundleID>`
+
+## 打开 App 自动续播
+
+- 行为：**只在冷启动**、且**只在当前没在放**的时候，接着**上次那首 + 上次那个位置**放（`MediaPlayer.resumeLastPlayback(from:)`，`RootView` 的 `.task` 里调）。切回前台不续播——否则「暂停着切走、回来被强行放起来」，正在放的那首也会被打断。
+- 存档点三个，缺一个就会丢：① `startCurrent()` 末尾（切歌即存档）；② 播放器的 `.paused` 分支；③ 时间观察者里每 5 秒兜底一次（进程被直接杀掉，走不到 ①②）。键 `playback.lastItemID` / `playback.lastElapsed`。进后台（`scenePhase == .background`）也要存一次，那是被系统回收前最后的回调。
+- ⚠️ **续播必须先读存档、再调 `play()`**。`play()` 会走 `startCurrent()`，那里有一发「切歌即存档」，会把「当前条目 = 这一首、位置 = 0」写回去。先 play 再读，读到的永远是刚被覆盖的 0 —— 表现为**续播永远从头开始**，日志里是 `存档续播点：0s / 254s` 紧跟着 `上次没听到 1 秒，从头放`。实测抓过这个。
+- ⚠️ 定位那一刻**不能用 `seek(toSeconds:)`**：它按 `progress` 算，而 `duration` 在条目加载完之前是 0（`MediaItem.durationSec` 也是可选），会直接 return。要直接落绝对秒数（`seekDirectly(toSeconds:)`）。
+- 停在片尾（`elapsed >= duration - 1`）存档要记 0，否则下次一进去就是「已经放完」，直接跳下一首。
+- 上次那首被删了就退回第一首——用户要的是「打开就有声」，不是「精确回到某首」。
+- 顺序不能反：`.task` 里先 `adoptExternalMedia()` 再 `resumeLastPlayback(from: library.items)`，不然刚收进来的外部文件还不在 `items` 里，续播找不到。
+
+## 打开 App 自动续播 / 切歌接位置
+
+收听位置**按条目分开存**（`playback.positions` = `[条目id: 秒数]`），不是只存「最后那一首的位置」——只存一个的话，切走再切回来就从头了。另存 `playback.lastItemID` 用来回答「冷启动该放哪首」。
+
+- 冷启动：`resumeLastPlayback(from:)`（只在 `RootView` 的 `.task` 里调）读出「上次那首」→ `play(items:startIndex:)`。**不自己 seek**，接位置统一由 `startCurrent` 里的 `restorePosition` 负责，两处都 seek 会互相打架，而且那一刻 `duration` 还没加载出来。切回前台不续播——否则「暂停着切走、回来被强行放起来」，正在放的那首也会被打断。
+- 切歌也接位置：换到哪一首，就把它上次听到的地方接上（`restorePosition`），所以「听一半跳到别的歌、再切回来」不用重听。
+- ⚠️ **放完自动跳下一首要传 `restoringPosition: false`**。手动切歌（按钮/遥控）传 `true`，自动续播传 `false` —— 一首刚放完，下一首该从开头起，把下一首拉到二十分钟处是惊吓不是贴心。时间观察者里的自动下一首是直接 `index += 1; startCurrent(restoringPosition: false)`，**不能**直接调 `next()`。
+- ⚠️ **存档「正要离开的那首」必须在 `currentID` 被改写之前**（`startCurrent` 开头就 `savePosition()`）。位置是挂在 `currentID` 上的，换掉之后就再也取不到了。
+- 存档点三个，缺一个就会丢：① `startCurrent()` 开头（切歌即存档）；② 播放器的 `.paused` 分支；③ 时间观察者里每 5 秒兜底一次（进程被直接杀掉，走不到 ①②）。进后台（`scenePhase == .background`）也要存一次，那是被系统回收前最后的回调。
+- ⚠️ 定位那一刻**不能用 `seek(toSeconds:)`**：它按 `progress` 算，而 `duration` 在条目加载完之前是 0（`MediaItem.durationSec` 也是可选），会直接 return。要直接落绝对秒数（`seekDirectly(toSeconds:)`）。
+- 停在片尾（`elapsed >= duration - 1`）存档要记 0：这样一首放完、用户按上一首回去，它是从头放的，而不是又跳到结尾；下次续播也不会一进去就「已经放完」。`restorePosition` 里还有第二道闸防旧数据。
+- 接位置的门槛是 **1 秒**：比这更短说明上次基本没听，从头放更符合直觉。
+- 上次那首被删了就退回第一首——用户要的是「打开就有声」，不是「精确回到某首」。
+- 顺序不能反：`.task` 里先 `adoptExternalMedia()` 再 `resumeLastPlayback(from: library.items)`，不然刚收进来的外部文件还不在 `items` 里，续播找不到。
+- 旧版本的单条存档键 `playback.lastElapsed` 在 `init()` 的 `migrateLegacySavePoint()` 里并进表、随即删掉，所以升级那一刻不会白丢一次位置。
 
 ## 文本解码（标题里的 \u002F）
 
@@ -128,6 +168,15 @@ triggers:
 - 画法要点：音符各部件共用 `gradientUnits="userSpaceOnUse"` 的渐变，否则每个矩形/椭圆各自映射渐变、拼接处会出现接缝；符干顶端要藏进连梁里，否则露出圆头；整体用 `transform="translate(...) scale(1.28)"` 居中放大。
 - 改名后必须重新构建并重装；`devicectl` 安装**不会自动重启**已在运行的 App，装完要 `--terminate-existing` 启动一次才看得到新界面。
 
+## 分段音频的段号（P1/4）
+
+- `phonemusic` 用 `ffmpeg -f segment` 切分，段号**默认 0 起**：产物是 `<标题>.part00.mp3`、`part03.mp3`……（实测确认），而它写进 ID3 的 `track`/`title` 是 `P1/4`…（1 起）。**两者差一**：解析文件名拿到的是原始段号，展示成 `P` 号要 +1。落点 `ios/Douyin2MP3/Douyin2MP3/Models/Segments.swift`。
+- 列表副标题的统一口径在 `MediaLibrary.subtitle(for:)`（列表 / 迷你播放条 / 全屏播放页三处共用，别再往 `MediaItem` 上挂第二份）。总段数按**库内同前缀条目**统计，所以 `P2/4` 的含义是「这个合集在库里一共 4 段」，不是「源文件一共切了几段」；库里只有一段时不标，免得全是噪音。
+- 分段文件要出现在资料库里，得放进 App 沙盒的 `Documents/Video`（`adoptExternalFiles()` 启动时收录）：
+  `xcrun devicectl device copy to --device <UDID> --domain-type appDataContainer --domain-identifier <bundleID> --user mobile --source <目录或文件> --destination Documents/Video`
+  （`phonemusic` 的 `pull` 是只读的，没有反向推送子命令；`--source` 传目录是递归的。）
+- `Segments.parse` 是纯 Foundation，可命令行单测：`swiftc -O Models/Segments.swift main.swift -o segtest`（注意它只依赖 Foundation，编译时把 `extension MediaItem/MediaLibrary` 那两段剪掉即可，`main.swift` 才能放顶层语句）。
+
 ## 验证归档
 
 - 取流：真机取不到时，先在本机用 Swift 命令行版喂同一条链接复现，再判断是接口问题还是 App 问题。
@@ -135,6 +184,9 @@ triggers:
 - 进度换算：`swiftc -O Services/DouyinExtractor.swift main.swift -o progresstest` 单测 `FetchProgress.fromBytes`（`expected=-1` → `fraction=nil` 且上报字节；`expected=0` 不产生 NaN；超额夹到 1.0）。
 - 只有 `main.swift` 那个文件名能放顶层语句；其它文件名必须 `@main struct X { static func main() }`，否则报 `expressions are not allowed at the top level`。
 - 真机诊断：`DEVICECTL_CHILD_D2M_DEBUG=1 xcrun devicectl device process launch --console --terminate-existing --device <UDID> <bundleID>`，App 里 `D2M_DEBUG=1` 时才打印 `[d2m]` 取流/下载细节（默认关闭）。
+- ⚠️ **`DouyinDebug.log` 必须 `fflush(stdout)`**：`devicectl --console` 下 stdout 是块缓冲的管道，进程被 kill（`timeout`、`--terminate-existing`）时最后几行还在缓冲区里，日志会缺掉最关键的那几行 —— 看起来就像「这段代码根本没执行」，很容易顺着这个假象去查错地方。
+- ⚠️ **截图里读小字别硬猜**：确认框这类半透明 `Material` 卡片，像素取样分不出「环的颜色」和「卡片本身透出的背景色」（实测卡片的青色调来自背景透色，不是控件颜色）。要判断行为就让代码自己把结论打进日志，别靠肉眼看 3 像素高的字。
+- ⚠️ **续播/切歌这类「要点一下才能看到」的行为，用 `D2M_JUMP_DEMO=1` 验**（`MediaPlayer.runJumpDemoIfRequested()`，`RootView` 的 `.task` 里调）：自动「听 6 秒 → 切下一首 → 再 6 秒 → 切回上一首」，全走真实链路。**别直接把 `previous()` 写进演示** —— 它带「播放 3 秒内才真切歌」的规矩，6 秒后调它只会回到本首开头、什么都验不到，要直接 `index -= 1; startCurrent(restoringPosition: true)`。实测输出：`存档《1小时…》：933s` → `切歌续播：《1小时…》从 933s 接上`，正好接回离开的那一刻。
 - 截真机屏幕（不用 WebDriverAgent）：`xcrun devicectl device capture screenshot --device <UDID> --destination /tmp/x.png`。
 - 安装：`devicectl install` 成功后必须再 `process launch` 一次，才算「装完能跑」。
 - ⚠️ 真机**远程点击不可靠**：WebDriverAgent 这类远程控制方案依赖设备已信任开发者证书，证书没信任时直接起不来，反复重试很费时（每次探测约 20 秒）。命令行能稳定做到的是**安装、启动、截图**；凡是要点一下才能看到的（点歌、看迷你条、收键盘）就请用户手点，然后自己截图核对。
