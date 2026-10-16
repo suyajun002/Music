@@ -4,31 +4,35 @@ description: >
   用户要把抖音链接变成 iPhone 上能播放的本地视频（无水印下载、离线保存、锁屏与后台播放），
   或要在这个 App 上继续开发（改界面、改取流、换图标、重新装到真机、签名过期重装）时使用。
   同时涵盖「不打开 Xcode GUI，从命令行构建并安装 iOS App 到真机」的通用流程。
+  YouTube 那条走 Apify 的现成 actor（REST 调用，不是自己实现下载器）。
   纯工程实现（Swift + 系统框架），app 内不调用任何模型。
 triggers:
   - 抖音转视频/抖音下载到手机/抖音链接变成本地视频/手机上播放抖音
   - douyin2mp3/抖音转MP3 App/抖音 App 改一下
+  - YouTube 链接转 mp3/YouTube 下载音频/粘 YouTube 链接到 App/配 Apify token
   - 装到 iPhone/安装到真机/签名过期/重新安装 App
   - 命令行构建 iOS App/devicectl 安装/信任开发者证书
 ---
 
-# 抖音 → iPhone 本地视频 App
+# 抖音 / YouTube → iPhone 本地媒体 App
 
-把抖音分享链接变成手机上能播的本地视频：App 自己解析、下载无水印 MP4、存沙盒、离线播放，锁屏与后台继续出声。不依赖 Mac、不依赖服务器、不重编码音频。
+把抖音分享链接变成手机上能播的本地视频（App 自己解析、下载无水印 MP4、存沙盒、离线播放，锁屏与后台继续出声），把 YouTube 链接变成 mp3（交给 Apify 上的 actor 代跑，见「YouTube → 音频（Apify）」）。粘链接时按域名**自动认来源**，两条链路后面共用队列、进度、资料库、续播。不依赖 Mac、不依赖自己的服务器；YouTube 那条要花钱（约 ¥0.5/首）。
 
 > 本文件从 [douyin2mp3](https://github.com/suyajun002/douyin2mp3) 导出，路径均相对仓库根目录。
 
 ## 何时用
 
-- 用户要「抖音链接 → 手机能听/能看」
-- 要改这个 App（界面、取流、图标、签名、重装）
+- 用户要「抖音链接 → 手机能听/能看」，或「YouTube 链接 → 手机上一首 mp3」
+- 要改这个 App（界面、取流、图标、签名、重装）；YouTube 那条要改 actor 参数或换 token
 - 要把任意 iOS App 从命令行构建并装到真机（见「通用：命令行构建并安装到真机」）
 
 ## 项目位置
 
 - App 工程：`ios/Douyin2MP3`（SwiftUI，零第三方依赖；**显示名「Music」**，图标淡粉底 + 深莓色音符，见「命名与图标」）
 - 签名：工程里**不含** `DEVELOPMENT_TEAM`（已清空），bundle id 是占位值 `com.example.douyin2mp3`。装真机必须自己配团队，或构建时用 `DEVELOPMENT_TEAM=<团队ID> PRODUCT_BUNDLE_IDENTIFIER=<自己的ID>` 从命令行传入 —— 个人值留在命令行、不写回仓库；只做编译校验加 `CODE_SIGNING_ALLOWED=NO`
-- 取流核心：`ios/Douyin2MP3/Douyin2MP3/Services/DouyinExtractor.swift`
+- 取流核心：`ios/Douyin2MP3/Douyin2MP3/Services/DouyinExtractor.swift`（抖音）
+- 抽流接口与来源路由：`Services/MediaExtracting.swift`（两家共用的协议）、`Models/MediaSource.swift`（按域名认来源）
+- YouTube：`Services/YouTubeExtractor.swift`（Apify REST）+ `Services/KeychainStore.swift`（token 存 Keychain）
 - 并发闸门：`Services/ConcurrencyGate.swift`（纯 Foundation，可命令行单测）
 - 播放：`Services/MediaPlayer.swift` + `Views/VideoSurface.swift`
 - 图标源：`design/appicon.svg`（`rsvg-convert` 出 1024 PNG → `Assets.xcassets/AppIcon.appiconset`）
@@ -67,6 +71,31 @@ triggers:
 ## 接口变了改哪里
 
 只改 `DouyinExtractor.swift`（`DouyinConfig` 里的 UA / 清晰度候选 / 超时，以及各解析方法）。改完必须重新构建并重装 App。
+
+## YouTube → 音频（Apify）
+
+第二条取流链路，和抖音**完全不是一个套路**：抖音是自己解分享页 + CDN 直连，YouTube 是花钱让 Apify 上的 actor 代跑（YouTube 对自建 IP 封锁很狠，自建不划算）。两边实现同一个 `MediaExtracting` 协议，`ConversionService` 按 `Job.source` 选，UI 不知道有几个来源。
+
+**链路**（actor `lurkapi/youtube-to-mp3-audio-downloader`，REST 直连，不走 SDK）：
+
+1. `POST https://api.apify.com/v2/acts/<actor>/runs?token=<TOKEN>`，body 里传 `url` → 拿 `data.id` 和 `data.defaultDatasetId`
+2. `GET /v2/actor-runs/<id>?token=` → `data.status`，`READY`/`RUNNING` 继续等，`SUCCEEDED` 收工，其余算失败（把 `statusMessage` 带进错误里）
+3. `GET /v2/datasets/<datasetId>/items?clean=true&format=json&limit=1000&offset=0&token=` → 一条一条 `{videoId,title,duration,audioFileUrl,status,error}`
+4. 直接 HTTP GET `audioFileUrl` 拿 mp3（若 401/403，给它补上 `?token=` 再试一次）
+
+**⚠️ 必须显式指定住宅代理**：`proxyConfiguration: {useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"]}`。不写的话 actor 自己会挑机房代理，YouTube 直接封，症状是一律「下载失败」——看起来像 token 或参数错，其实只是代理。这不是可选项。
+
+**钱**：按音频时长计费，`$0.0001785 × 秒 + $0.0193`，均值 **≈$0.068/首（约 ¥0.5）**，一首 1~3 分钟；其中住宅代理流量占账单 68%（$8/GB）。免费计划 $5/月 ≈ 73 首。**失败不计下载费**（只收约 $0.006 的计算费）。已知必失败：直播回放、年龄限制、私享/已删除。所以 App 里含 YouTube 的批量确认框把价格写在脸上，别让用户稀里糊涂花了钱。
+
+- 每条链接**单独开一次 run**（而不是批量一次）：进度和失败各自独立，也套得上现成的 `Job` + `ConcurrencyGate`。代价是每 run 约 $0.009 的固定计算费（约占 13%），量小可以先这么着。
+- token 存 **Keychain**（`Services/KeychainStore.swift`，`kSecClassGenericPassword` + `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`，不进备份）。**不要用 `UserDefaults`**：那是明文 plist，会跟着 iTunes/iCloud 备份走。设置面板里可随时更换，读取是**每次调用现读**，所以改完立即生效、不用重启 App。
+- token 走**查询串**而不是 `Authorization` 头（skill 里脚本是这么通的，换写法得重新验一遍）。代价是 URL 本身带凭证：**别把完整 URL 打进日志**。
+- 结果里没 `audioFileUrl` 时要报 `status`/`error` 里的原因（「直播回放不支持」之类），不要笼统说「下载失败」。地址字段另做一道校验：只认 http(s) 绝对地址，空白串/相对地址一律当没给——`URL(string:)` 很宽容，会把空白串变成一个相对 URL，拿到下载器里只会报看不懂的错。
+- `URL(string:)` 之外，抠视频 ID 的正则要覆盖 `youtu.be/`、`/shorts/`、`/embed/`、`?v=` 四种；长度必须正好 11 位，多了少了都算认不出。纯播放列表（只有 `list=`）没有 ID，不认。
+- 域名路由在 `Models/MediaSource.swift`，匹配规则是「**等于该域名 或 以 `.该域名` 结尾**」——**不能用 `contains`**，否则 `douyin.com.evil.example` 会被当成抖音。
+
+**不花命令行验证**：`swiftc -O Services/MediaExtracting.swift Models/MediaSource.swift Services/YouTubeExtractor.swift Services/DouyinExtractor.swift Services/JSONEscapes.swift main.swift -o yttest`（`DouyinExtractor.swift` 是纯 Foundation，可以拉进来提供 `DouyinConfig`，省得写桩；`YouTubeExtractor` 里解析用的 `ResultItem(json:)` 是 `internal`，命令行直接喂真实 JSON）。49 项：来源路由、扩展名/计费、视频 ID 正则、抠链接、Apify 响应解析（成功 / 失败 / 空 / 垃圾地址）、run 状态终态、补 token 重试、进度换算、mp3 魔数校验。
+**花钱的端到端验证**：`D2M_YT_URL=<链接>` 环境变量起 App（`ConversionService.submitDemoLinkIfRequested()`）走真实 Apify 链路，**跑之前先问用户**（一次约 ¥0.5）。
 
 ## 通用：命令行构建并安装到真机
 
@@ -112,7 +141,7 @@ triggers:
 
 - 打开 App / 切回前台识别剪贴板，落点 `Services/ClipboardReader.swift` + `ConversionService.checkClipboard()`。
 - 先用**不需要授权**的元数据筛：`changeCount` 变了 且 `hasStrings`/`hasURLs`，才真去读内容。iOS 16 起读 `UIPasteboard.general.string` **必然弹系统授权框**，没有静默 API；所以「值不值得读」必须靠元数据先判。不管读没读到都先记下 `changeCount`，否则被拒后每次启动都再弹一次，变成骚扰。
-- 只认抖音域名：`DouyinExtractor.douyinURLs(in:)` = `allURLs(in:)` 再过滤 `isDouyinHost`。复制个 B站/淘宝链接打开 App 不该弹框（确认了也只会下失败）。域名要按 `host == 域名` 或 `host.hasSuffix("." + 域名)` 比，**别用 `contains`**，否则 `douyin.com.evil.example` 会被当成抖音。
+- 只认认得的域名：`LinkScanner.recognizableURLs(in:)` 抠链再按 `MediaSource.of(url)` 过滤（抖音 + YouTube 两家）。复制个 B站/淘宝链接打开 App 不该弹框（确认了也只会下失败）。域名要按 `host == 域名` 或 `host.hasSuffix("." + 域名)` 比，**别用 `contains`**，否则 `douyin.com.evil.example` 会被当成抖音。
 - 确认框**不能用 `.alert`**：系统弹窗只有一排按钮，塞不下「外圈倒计时环 + 圈里一个按钮」，按钮标题也不能跟着秒数实时变（倒计时会卡在初始值）。落点 `Views/ClipboardConfirmView.swift`：外圈 `Circle().trim` 倒计时环，圈里是唯一的按钮「忽略」，不点就 5 秒后自动入队。
 - ⚠️ **别给框里的按钮加 `role: .cancel`**：那个角色接的是系统「取消」动作，配在这个自定义框上没有好处。
 - ⚠️ **`checkClipboard()` 要挡住重复推送**：启动时 `.task` 和 `scenePhase` 转 `.active` 会各调一次，同一批链接被推第二个 prompt 的话倒计时会从头再来、界面也会抖。判断用 `prompt.id != clipboardPrompt?.id`。
@@ -154,7 +183,7 @@ triggers:
 
 ## 并发下载（一次粘多条）
 
-- 一次可粘贴多条分享文本：`DouyinExtractor.allURLs(in:)` 抠出全部 `https://` 链接、去重、去掉结尾中文标点；`DouyinExtractor` 是 **actor**，凭证与 Cookie 池在多任务间天然串行，网络等待可交错，所以并行下载是真并行。
+- 一次可粘贴多条分享文本：`LinkScanner.allURLs(in:)` 抠出全部 `https://` 链接、去重、去掉结尾中文标点；两个抽取器都是 **actor**，凭证与 Cookie 池在多任务间天然串行，网络等待可交错，所以并行下载是真并行。
 - 并发规则集中在 `Services/ConcurrencyGate.swift`（纯 Foundation，不碰下载实现与 UI）：`limit`（最低 1）、`takeStartable()` 取当前可启动的任务（先到先跑、不超过上限）、`finish()` 释放名额。`ConversionService.pump()` 只负责「取任务 → 起 Task → 跑完回来 `finish()` 再 `pump()`」。
 - 并发数用户可调并持久化：`ConversionService.concurrencyOptions = [1,2,3,4,6]`，默认 3，键 `conversion.maxConcurrent`，改完立刻重排。
 - ⚠️ `@Published var maxConcurrent` 的 `didSet` **在 `init` 里赋值时不会触发**，所以 `init` 里必须再显式 `gate.limit = initial` 一次，否则持久化的并发数不会生效。
