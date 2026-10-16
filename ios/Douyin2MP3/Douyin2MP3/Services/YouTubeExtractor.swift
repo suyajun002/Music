@@ -329,12 +329,19 @@ actor YouTubeExtractor: MediaExtracting {
 
     /// 从各种形态的 YouTube 链接里抠出 11 位视频 ID：
     /// `youtu.be/ID`、`/shorts/ID`、`/embed/ID`、`?v=ID`。
+    ///
+    /// 两处容易踩的：
+    /// - `v=` **不一定是第一个参数**（手机上分享出来的是
+    ///   `watch?app=desktop&v=ID&list=RD…&start_radio=1`），所以前缀要收 `&v=` 不只是 `?v=`；
+    /// - ID 后面要有**边界**（`(?![A-Za-z0-9_-])`）。少了它，`{11}` 会把更长的串
+    ///   直接截前 11 位 —— 短了认不出是安全的，长了悄悄截断则会把两条不同的视频认成同一条，
+    ///   去重那关就跟着错（少下一首，或者更糟：拿错 ID 去提交）。
     static func videoID(of url: URL) -> String? {
         videoID(in: url.absoluteString)
     }
 
     static func videoID(in text: String) -> String? {
-        let pattern = "(?:youtu\\.be/|/shorts/|/embed/|[?&]v=)([A-Za-z0-9_-]{11})"
+        let pattern = "(?:youtu\\.be/|/shorts/|/embed/|[?&]v=)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])"
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               match.numberOfRanges > 1,
