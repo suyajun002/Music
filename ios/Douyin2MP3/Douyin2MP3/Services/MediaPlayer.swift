@@ -422,6 +422,15 @@ final class MediaPlayer: ObservableObject {
         if let artwork {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
         }
+        // 动画封面（萌宠）：播放时系统会在灵动岛/锁屏的「正在播放」里**播这段循环视频**。
+        // 只在播放中给 —— 暂停时给一段还在动的封面会很怪，静态图反而对。
+        if isPlaying, #available(iOS 26.0, *),
+           let animated = AnimatedArtwork.make(), let key = AnimatedArtwork.artworkKey {
+            info[key] = animated
+            DouyinDebug.log("动画封面：已写入 nowPlayingInfo（key=\(key)）")
+        } else {
+            AnimatedArtwork.diagnoseIfNeeded()
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
