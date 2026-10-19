@@ -18,7 +18,7 @@ struct ClipboardConfirmView: View {
     let status: ClipboardPromptStatus
     let onFix: () -> Void
 
-    /// 倒计时总秒数。这是产品节奏，不是取流参数，所以留在视图里（对齐 MediaPlayer.skipInterval 的做法）。
+    /// 倒计时总秒数。这是产品节奏，不是取流参数，所以留在视图里。
     private static let countdownSeconds = 5
 
     private static let ringDiameter: CGFloat = 112

@@ -257,14 +257,6 @@ final class MediaPlayer: ObservableObject {
         updateNowPlaying()
     }
 
-    /// 相对当前位置快进/快退（负数即快退），锁屏的 ±15 秒按钮用。
-    /// 用播放器的真实时间算基准，不拿 `elapsed`：后者最多有 0.5 秒的滞后，连点会越点越偏。
-    func skip(by seconds: Double) {
-        let now = player.currentTime().seconds
-        let base = now.isFinite ? now : elapsed
-        seek(toSeconds: base + seconds)
-    }
-
     // MARK: - 拖动进度条
 
     /// 拖动期间为 true：UI 上的位置改由手指决定，周期观察者让位。
@@ -397,7 +389,7 @@ final class MediaPlayer: ObservableObject {
             return .success
         }
         // 锁屏 / 控制中心的**进度条**：不注册这个命令，系统就不会把拖动接进来 ——
-        // 表现为「锁屏上进度条根本拖不动」。听长音频（1~2 小时的串烧）时这是唯一的快进手段。
+        // 表现为「锁屏上进度条根本拖不动」。
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let position = (event as? MPChangePlaybackPositionCommandEvent)?.positionTime else {
                 return .commandFailed
@@ -405,22 +397,16 @@ final class MediaPlayer: ObservableObject {
             Task { @MainActor in self?.seek(toSeconds: position) }
             return .success
         }
-        // 同上：不注册就没有 ±15 秒按钮（锁屏、控制中心、AirPods 的双击/三击都走这两个命令）。
-        // 注意 preferredIntervals 是 [NSNumber]：整数字面量能隐式桥接，Double 不行，必须显式包一层。
-        center.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
-        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
-        center.skipForwardCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skip(by: Self.skipInterval) }
-            return .success
-        }
-        center.skipBackwardCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skip(by: -Self.skipInterval) }
-            return .success
-        }
+        // ⚠️ 这里**只启用** play/pause、next/previous、changePlaybackPosition，**刻意不启用**
+        // skipForward/Backward（±15 秒）：锁屏那块「正在播放」小组件只有三个按钮位，系统在
+        // 「启用了 skip」时会用 ±15 顶掉 ⏮/⏭，两组不会同时出现 —— 切歌就从锁屏上消失了。
+        // 取舍：切歌是锁屏上更高频的操作，而「跳一段」有上面那条进度条兜着（能落任意位置）。
+        // 不启用时系统也会自己禁用按钮，所以必须 `isEnabled = false` 显式关掉。
+        // 若哪天改回 ±15，`preferredIntervals` 是 [NSNumber]：Double 字面量不能隐式桥接，
+        // 要写 [NSNumber(value: 15.0)]。
+        center.skipForwardCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = false
     }
-
-    /// 遥控快进/快退的步长（秒）。
-    private static let skipInterval = 15.0
 
     private func updateNowPlaying() {
         guard currentID != nil else { return }
