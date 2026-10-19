@@ -2,9 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- 灵动岛/锁屏萌宠：没有这个键，Activity.request 会被系统拒绝（起不来且不报明确错误） -->
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<!-- 全程 HTTPS 直连抖音，不需要 ATS 豁免，也不需要本地网络权限 -->
 	<key>UIBackgroundModes</key>
 	<array>

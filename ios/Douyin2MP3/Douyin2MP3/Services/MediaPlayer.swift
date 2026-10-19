@@ -66,11 +66,6 @@ final class MediaPlayer: ObservableObject {
         queue = items
         index = max(0, min(startIndex, max(0, items.count - 1)))
         startCurrent(restoringPosition: true)
-        // 起萌宠。放在 `startCurrent` 之后：那时 `currentTitle` 才有值。
-        // 起失败不致命（用户可能在系统设置里关了 Live Activities），播放不受影响。
-        if let title = queue.indices.contains(index) ? queue[index].title : nil {
-            PetActivity.shared.start(title: title)
-        }
     }
 
     func play(item: MediaItem) {
@@ -186,8 +181,6 @@ final class MediaPlayer: ObservableObject {
         player.play()
         isPlaying = true
         updateNowPlaying()
-        // 换歌即刷新萌宠（`force` 绕过节流：换歌必须立刻反映，不然标题会停在上一首）
-        PetActivity.shared.update(title: item.title, isPlaying: true, frame: 0, force: true)
         if restoringPosition { restorePosition(for: item) }
     }
 
@@ -230,8 +223,6 @@ final class MediaPlayer: ObservableObject {
         } else {
             player.play()
         }
-        // 暂停/继续要立刻反映到萌宠上（绕过节流），不然锁屏上的状态会滞后
-        PetActivity.shared.update(title: currentTitle, isPlaying: player.timeControlStatus == .playing, force: true)
     }
 
     /// 直接落到 AVPlayer（进度条松手、遥控快进快退都走这里）。
@@ -297,8 +288,6 @@ final class MediaPlayer: ObservableObject {
     func stop() {
         player.pause()
         player.replaceCurrentItem(with: nil)
-        // 收掉萌宠：音乐停了不该留一张僵尸卡片在锁屏上
-        PetActivity.shared.end()
         queue = []
         index = 0
         isPlaying = false
@@ -347,12 +336,6 @@ final class MediaPlayer: ObservableObject {
                     self.savePosition()
                 }
                 self.updateNowPlaying()
-                // 萌宠翻页：Live Activity 单帧动画上限 2 秒，持续动感只能靠周期性
-                // update 切姿态。这里跟着已有的 0.5s 观察者走，真正的节流在
-                // `PetActivity.update` 里（2.5s）—— 别把频率写在这儿，两处阈值会打架。
-                if self.isPlaying {
-                    PetActivity.shared.update(title: self.currentTitle, isPlaying: true)
-                }
             }
         }
     }
