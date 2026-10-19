@@ -35,9 +35,34 @@ enum AnimatedArtwork {
     /// 只打一次诊断，避免 0.5 秒一轮的 `updateNowPlaying` 把日志刷爆。
     private static var didDiagnose = false
 
+    /// handler 里各打一次就够 —— 系统会反复要，日志刷爆就看不出别的了。
+    private static var didLogPreview = false
+    private static var didLogVideo = false
+
+    /// 每轮 `updateNowPlaying` 都打，但只在 `D2M_DEBUG=1` 下。
+    /// 不节流是**故意**的：0.5 秒一轮正好能看出「封面实例是不是每轮都被换掉」，
+    /// 那正是「动画起不来」的头号嫌疑。
+    static func logWrite(_ key: String?) {
+        guard DouyinDebug.enabled else { return }
+        guard let key else {
+            DouyinDebug.log("动画封面：这一轮**没写**动画封面（资源缺 / key 不支持 / 已暂停）")
+            return
+        }
+        DouyinDebug.log("动画封面写入 key=\(key)"
+                        + " preview=\(stillImage == nil ? "无" : "有")"
+                        + " video=\(videoURL == nil ? "无" : "有")"
+                        + " 省电=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
+                        + " 减弱动态=\(UIAccessibility.isReduceMotionEnabled)")
+    }
+
     /// 把「哪一步断了」打出来。
-    /// 这条链路全是**静默失败**：资源找不到、key 不被平台支持、比例不符 —— 系统都不报错，
-    /// 现象一律是「封面没变」，不插日志根本无从下手。
+    /// 这条链路全是**静默失败**：资源找不到、key 不被平台支持、比例不符、被省电模式挡掉 ——
+    /// 系统一律不报错，现象都是「封面没换」，不插日志根本无从下手。
+    ///
+    /// ⚠️ 分两个层面查，别混在一起：
+    ///   · **handler 有没有被调用** —— 没调用 = 系统压根没采用我们的封面（key/比例/资源问题）
+    ///   · 调用了却还显示静态图 = 被**运行时条件**挡掉（省电模式、减弱动态效果……）
+    /// 两者的修法完全不同，混在一起查会往错的方向改。
     static func diagnoseIfNeeded() {
         guard DouyinDebug.enabled, !didDiagnose else { return }
         didDiagnose = true
@@ -50,6 +75,33 @@ enum AnimatedArtwork {
         } else {
             DouyinDebug.log("动画封面诊断：系统低于 iOS 26，API 不可用")
         }
+        // 这两条是文档里点名的「自动退回静态图」的触发条件。
+        // 省电模式最容易被忽略 —— 它不影响别的任何功能，只悄悄关掉动画封面。
+        DouyinDebug.log("动画封面诊断：省电模式 = \(ProcessInfo.processInfo.isLowPowerModeEnabled)"
+                        + "，减弱动态效果 = \(UIAccessibility.isReduceMotionEnabled)")
+    }
+
+    /// **整个 App 只造一个**，反复复用。
+    ///
+    /// `updateNowPlaying()` 是 0.5 秒跑一轮的，如果每轮都 `make()` 一个新实例，
+    /// 塞进 nowPlayingInfo 的就是一份「每 0.5 秒换一次身份」的封面 ——
+    /// 系统会当成新封面重新解析，循环播放根本起不来。
+    /// 头文件说 `artworkID` 就是这份封面的身份，所以身份必须**稳定**。
+    private static var cached: Any?
+
+    /// 不带 `@available` 的入口：调用点（`updateNowPlaying`）在 iOS 18 下也要能编译，
+    /// 版本判断收在这里做。返回 `Any?` 是因为调用点不能出现 iOS 26 的类型名。
+    static func sharedIfAvailable() -> Any? {
+        guard #available(iOS 26.0, *) else { return nil }
+        return shared()
+    }
+
+    @available(iOS 26.0, *)
+    static func shared() -> MPMediaItemAnimatedArtwork? {
+        if let cached = cached as? MPMediaItemAnimatedArtwork { return cached }
+        let art = make()
+        cached = art
+        return art
     }
 
     /// 给 `nowPlayingInfo` 用的动画封面。
@@ -64,10 +116,22 @@ enum AnimatedArtwork {
             previewImageRequestHandler: { size in
                 // 预览图要尽快返回（头文件建议「理想情况下同步返回」），所以直接给缓存好的静帧，
                 // 让系统按需要缩放。
-                stillImage
+                if DouyinDebug.enabled, !didLogPreview {
+                    didLogPreview = true
+                    DouyinDebug.log("动画封面：系统要预览图 \(Int(size.width))×\(Int(size.height))，"
+                                    + (stillImage == nil ? "我们给不出" : "已给"))
+                }
+                return stillImage
             },
-            videoAssetFileURLRequestHandler: { _ in
-                videoURL
+            videoAssetFileURLRequestHandler: { size in
+                // 这一行是**分水岭**：打出来了，说明系统真的采用了我们的封面；
+                // 一声不吭，说明是 key/资源没被接受，得回头查那两处。
+                if DouyinDebug.enabled, !didLogVideo {
+                    didLogVideo = true
+                    DouyinDebug.log("动画封面：系统要视频 \(Int(size.width))×\(Int(size.height))，"
+                                    + "我们给 1080×1440")
+                }
+                return videoURL
             }
         )
     }

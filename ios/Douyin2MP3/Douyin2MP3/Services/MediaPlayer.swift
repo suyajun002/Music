@@ -419,19 +419,36 @@ final class MediaPlayer: ObservableObject {
         if duration > 0 {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
-        if let artwork {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
-        }
         // 动画封面（萌宠）：播放时系统会在灵动岛/锁屏的「正在播放」里**播这段循环视频**。
         // 只在播放中给 —— 暂停时给一段还在动的封面会很怪，静态图反而对。
-        if isPlaying, #available(iOS 26.0, *),
-           let animated = AnimatedArtwork.make(), let key = AnimatedArtwork.artworkKey {
-            info[key] = animated
-            DouyinDebug.log("动画封面：已写入 nowPlayingInfo（key=\(key)）")
-        } else {
+        //
+        // ⚠️ 实例**复用**，不是每次都 new。`make()` 造出来的对象里握着两个
+        // async handler，`artworkID` 是它的身份 —— 每 0.5 秒塞一个全新实例进
+        // nowPlayingInfo，系统看到的是一份「换了身份的封面」，很可能每次都被
+        // 当成新封面重新解析，循环播放就永远起不来。
+        let animated = isPlaying ? AnimatedArtwork.sharedIfAvailable() : nil
+        let animatedKey = animated == nil ? nil : AnimatedArtwork.artworkKey
+
+        // 用户定的是「封面**只要萌宠**」——那就别再把真封面同时交上去。
+        // 两个都在时系统会自己挑一个（实测挑的是真封面那张静态图），
+        // 把静态那份拿掉，能交的就只剩动画封面了。
+        if animatedKey == nil {
+            if let artwork {
+                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
+            }
             AnimatedArtwork.diagnoseIfNeeded()
         }
+        if let animated, let animatedKey {
+            info[animatedKey] = animated
+        }
+        AnimatedArtwork.logWrite(animatedKey)
+
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // ⚠️ 必须设 `playbackState`。头文件的注释点名了它：
+        // 「App 开始或停止播放时必须设置，否则遥控功能可能不按预期工作」。
+        // 实测：只给 `nowPlayingInfo` 里的 `PlaybackRate` 是不够的 ——
+        // 系统不认这是「正在播放」，动画封面**一次都不会来取**（handler 不调用）。
+        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
     }
 
     private static func format(_ seconds: Double) -> String {
