@@ -10,14 +10,6 @@ final class PetActivity {
 
     private var activity: Activity<PetAttributes>?
 
-    /// 上次真正推给系统的时间，用于节流。
-    private var lastPushedAt = Date.distantPast
-    /// 两次更新之间的最小间隔。
-    ///
-    /// 不是性能考量，是**内容**考量：Live Activity 单帧动画上限 2 秒，而持续动感
-    /// 只能靠翻页。翻太快会被系统节流、看着像闪屏；2.5 秒一帧的点头反而自然。
-    private let minPushInterval: TimeInterval = 2.5
-
     private init() {}
 
     /// 用户在系统设置里能整体关掉 Live Activities，所以每次都要现查，不能假设可用。
@@ -39,6 +31,12 @@ final class PetActivity {
             update(title: title, isPlaying: true, force: true)
             return
         }
+        // ⚠️ 新建之前先清掉本 App 遗留的活动。`Activity<PetAttributes>.activities`
+        // 里可能有上次进程留下的僵尸：进程被强杀（重装、`--terminate-existing`、
+        // 系统回收）时走不到 `end()`。系统对每个 App 的**活动数量有上限**，
+        // 攒够了新活动一律请求失败 `targetMaximumExceeded` —— 现象极具误导性：
+        // 代码没错、日志会说"请求失败"，而屏幕上那条"不动的猫"其实是僵尸活动的画面。
+        reapOrphans()
         // 部署目标 iOS 18：直接用 `ActivityContent` 这个新接口。
         // ⚠️ 不能传裸 `ContentState` —— 那是已废弃的旧签名，会报
         // 「cannot convert value of type 'ContentState' to expected argument type ...」。
@@ -52,20 +50,34 @@ final class PetActivity {
         }
     }
 
-    /// 播放状态变化时更新。`force` 用于暂停/换歌这类必须立刻反映的事件，绕过节流。
-    func update(title: String, isPlaying: Bool, frame: Int? = nil, force: Bool = false) {
-        guard available, let activity else { return }
-        let now = Date()
-        if !force, now.timeIntervalSince(lastPushedAt) < minPushInterval { return }
-        lastPushedAt = now
+    /// 收掉本 App 所有已存在的活动（僵尸清理）。新建前调一次。
+    private func reapOrphans() {
+        let orphans = Activity<PetAttributes>.activities
+        guard !orphans.isEmpty else { return }
+        DouyinDebug.log("萌宠 Live Activity：清理遗留活动 \(orphans.count) 个")
+        for orphan in orphans {
+            Task { await orphan.end(nil, dismissalPolicy: .immediate) }
+        }
+    }
 
-        // 帧号自增，扩展侧据此切换姿态（翻页动画）
-        let nextFrame = frame ?? (activity.content.state.frame + 1)
-        let state = PetAttributes.ContentState(title: title, isPlaying: isPlaying, frame: nextFrame)
-        // 验「翻页到底推没推」。后台时周期观察者如果不回调，这里就停了 ——
-        // 现象是锁屏上的猫一动不动，光看锁屏截屏分辨不出「没动」和「动得小」。
-        DouyinDebug.log("萌宠推帧：frame=\(nextFrame)"
-                        + " 应用状态=\(UIApplication.shared.applicationState == .background ? "后台" : "前台")")
+    /// 播放状态/歌曲变化时更新。
+    ///
+    /// ⚠️ **只在真的变了的时候才推**。早期版本每 2.5 秒推一帧想做点头动画，
+    /// 结果 iOS 的更新预算很快耗尽、系统开始静默丢弃更新 —— 现象是「猫动几下
+    /// 就永远不动」，而日志还在刷（App 以为推成功了）。Live Activity 本来就不是
+    /// 持续动画视图，Apple 明说不要这么做。现在「在播放」的活气交给扩展里的
+    /// `symbolEffect`（系统自己渲染，不花预算）。
+    ///
+    /// `force` 用于暂停/换歌这类必须立刻反映的事件，绕过节流。
+    func update(title: String, isPlaying: Bool, force: Bool = false) {
+        guard available, let activity else { return }
+
+        // 内容没变就别打扰系统 —— 每次 update 都花预算，白推会加速耗尽。
+        let current = activity.content.state
+        guard force || current.title != title || current.isPlaying != isPlaying else { return }
+
+        let state = PetAttributes.ContentState(title: title, isPlaying: isPlaying, frame: 0)
+        DouyinDebug.log("萌宠更新：《\(title)》 \(isPlaying ? "播放中" : "已暂停")")
         Task {
             await activity.update(ActivityContent(state: state, staleDate: nil))
         }

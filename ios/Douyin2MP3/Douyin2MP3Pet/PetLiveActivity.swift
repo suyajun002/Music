@@ -21,31 +21,22 @@ struct Douyin2MP3PetBundle: WidgetBundle {
 }
 
 struct PetLiveActivity: Widget {
-    /// 每帧的姿态。**幅度要小** —— 灵动岛里 2.5 秒才换一帧，
-    /// 位移大了不是「呼吸」是「抽搐」。
-    private func pose(_ frame: Int) -> (scale: CGFloat, dy: CGFloat) {
-        // 6 帧一个循环，用正弦保证首尾接得上，不会跳。
-        let t = Double(frame % 6) / 6.0
-        return (1 + 0.03 * sin(2 * .pi * t), -3 * sin(2 * .pi * t))
-    }
-
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: PetAttributes.self) { context in
             // ---- 锁定屏幕卡片：面积大，质感主要在这里兑现 ----
             HStack(spacing: 14) {
-                PetImage(name: "pet-head", frame: context.state.frame)
+                PetImage(name: "pet-head")
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(context.state.title)
                         .font(.headline)
                         .lineLimit(1)
-                    Label(context.state.isPlaying ? "正在播放" : "已暂停",
-                          systemImage: context.state.isPlaying ? "waveform" : "pause.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .symbolEffect(.variableColor.iterative,
-                                      options: .repeating,
-                                      isActive: context.state.isPlaying)
+                    HStack(spacing: 5) {
+                        LiveGlyph(isPlaying: context.state.isPlaying)
+                        Text(context.state.isPlaying ? "正在播放" : "已暂停")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -55,7 +46,7 @@ struct PetLiveActivity: Widget {
             DynamicIsland {
                 // 展开态：**横向**排（这是灵动岛给的形状），所以用宽裁图 + 右侧文字
                 DynamicIslandExpandedRegion(.leading) {
-                    PetImage(name: "pet-head-wide", frame: context.state.frame, height: 46)
+                    PetImage(name: "pet-head-wide", height: 46)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Text(context.state.title)
@@ -64,33 +55,50 @@ struct PetLiveActivity: Widget {
                         .frame(maxWidth: 120, alignment: .leading)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text("🎧 耳机猫")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        LiveGlyph(isPlaying: context.state.isPlaying)
+                        Text("耳机猫").font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
             } compactLeading: {
-                PetImage(name: "pet-head", frame: context.state.frame, height: 20)
+                PetImage(name: "pet-head", height: 20)
             } compactTrailing: {
-                // 紧凑态右侧这颗之前是律动波浪图标，但**那一格太小**：
-                // 猫的耳朵会和波浪叠在一起（截图为证）。用户定的是「只留猫」，
-                // 所以这里把右侧整个让出来，猫独占紧凑态。
-                //
-                // 留一个**极窄的透明占位**而不是彻底删掉 `compactTrailing`：
-                // 两个闭包都在时灵动岛才知道要画「左右两块」，全删了会变成
-                // 单块布局，猫会被系统重新居中、和左侧的住宿相机挤在一起。
-                Color.clear.frame(width: 1)
+                // 「动」交给**系统自己渲染**的波形符号，而不是 App 推帧。
+                // 理由：Live Activity 的 `update()` 有预算，推得快会被系统静默丢弃
+                // （实测推到第 5 帧就不动了）。`symbolEffect` 是系统侧的持续动画，
+                // 不消耗更新预算，能一直动下去 —— 这是 Apple 允许的动效做法。
+                LiveGlyph(isPlaying: context.state.isPlaying)
             } minimal: {
-                PetImage(name: "pet-head", frame: context.state.frame, height: 18)
+                PetImage(name: "pet-head", height: 18)
             }
             .keylineTint(Color(red: 0.49, green: 0.08, blue: 0.29))
         }
     }
 }
 
-/// 带「翻页呼吸」的猫。
+/// 系统级律动符号：不靠 App 推帧，系统自己渲染，所以能持续动。
+private struct LiveGlyph: View {
+    let isPlaying: Bool
+
+    var body: some View {
+        // 💡 用 `waveform` + `variableColor.iterative`：这是 Apple 给「音频在动」
+        // 的现成符号动画，暂停时切成静态的暂停图标。
+        Image(systemName: isPlaying ? "waveform" : "pause.fill")
+            .symbolEffect(.variableColor.iterative,
+                          options: .repeating,
+                          isActive: isPlaying)
+            .foregroundStyle(Color(red: 0.49, green: 0.08, blue: 0.29))
+    }
+}
+
+/// 灵动岛/锁屏里的猫头。
+///
+/// ⚠️ **故意不做逐帧动画**：早期版本让 App 每 2.5 秒推一帧、扩展侧用
+/// `sin(frame)` 做点头，实测推几帧后系统就不再渲染（更新预算耗尽），
+/// 观感是「动一下就永远不动」。Apple 也明确说不要把它当持续动画视图。
+/// 现在猫是静止的，「在播放」的活气由 `LiveGlyph` 这种系统级动画承担。
 private struct PetImage: View {
     let name: String
-    let frame: Int
     var height: CGFloat = 64
 
     var body: some View {
@@ -98,9 +106,5 @@ private struct PetImage: View {
             .resizable()
             .scaledToFit()
             .frame(height: height)
-            // 呼吸靠 scale/offset 的短过渡；真正的「动」是 App 每 2.5 秒推一帧。
-            .scaleEffect(1 + 0.03 * sin(2 * .pi * Double(frame % 6) / 6.0))
-            .offset(y: -2 * sin(2 * .pi * Double(frame % 6) / 6.0))
-            .animation(.easeInOut(duration: 0.8), value: frame)
     }
 }

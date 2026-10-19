@@ -187,7 +187,7 @@ final class MediaPlayer: ObservableObject {
         isPlaying = true
         updateNowPlaying()
         // 换歌即刷新萌宠（`force` 绕过节流：换歌必须立刻反映，不然标题会停在上一首）
-        PetActivity.shared.update(title: item.title, isPlaying: true, frame: 0, force: true)
+        PetActivity.shared.update(title: item.title, isPlaying: true, force: true)
         if restoringPosition { restorePosition(for: item) }
     }
 
@@ -347,12 +347,9 @@ final class MediaPlayer: ObservableObject {
                     self.savePosition()
                 }
                 self.updateNowPlaying()
-                // 萌宠翻页：Live Activity 单帧动画上限 2 秒，持续动感只能靠周期性
-                // update 切姿态。这里跟着已有的 0.5s 观察者走，真正的节流在
-                // `PetActivity.update` 里（2.5s）—— 别把频率写在这儿，两处阈值会打架。
-                if self.isPlaying {
-                    PetActivity.shared.update(title: self.currentTitle, isPlaying: true)
-                }
+                // 这里**故意不**碰 Live Activity：它只在歌名/播放状态真的变化时
+                // 才需要更新（见 `PetActivity.update` 的注释）。以前这里每 0.5 秒
+                // 推一帧想做点头动画，很快耗尽系统更新预算，猫动几下就永远不动了。
             }
         }
     }
