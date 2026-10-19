@@ -266,6 +266,33 @@ triggers:
 - 安装：`devicectl install` 成功后必须再 `process launch` 一次，才算「装完能跑」。**但装之前先确认没有正在跑的下载**（见「通用：命令行构建并安装到真机」第 6 条）—— 安装会终止 App，YouTube 那种已经花钱开了 run 的任务一断就白花。
 - ⚠️ 真机**远程点击不可靠**：WebDriverAgent 这类远程控制方案依赖设备已信任开发者证书，证书没信任时直接起不来，反复重试很费时（每次探测约 20 秒）。命令行能稳定做到的是**安装、启动、截图**；凡是要点一下才能看到的（点歌、看迷你条、收键盘）就请用户手点，然后自己截图核对。
 
+## 灵动岛 / Live Activity（萌宠）
+
+界面必须住在 widget extension（`Douyin2MP3Pet`），宿主 App 只负责
+`Activity.request / update / end`。三个坑现象都是「空白或不动」，根因完全不同。
+
+- ⚠️ **扩展里的图片必须走 Asset Catalog，散装 PNG 会静默失败。** `Image("name")` 对
+  bundle 根的散装 PNG 解析不可靠，**失败不报错、直接画空白** → 灵动岛成了「一条黑条、
+  里面什么都没有」。先查扩展包里有没有 `Assets.car`。修法：放进 `.xcassets` 且放在
+  `Shared/`（两个 target 都挂载；App 的 `Resources/` 扩展读不到）。
+  验证：`xcrun assetutil --info <appex>/Assets.car | grep '"Name"'`。
+- ⚠️ **活动会泄漏，攒够后新活动一律 `targetMaximumExceeded`。** 进程被强杀时走不到
+  `end()`。**极具误导性**：屏幕上那条「不动的猫」其实是**僵尸活动**的画面，日志却说
+  「请求失败」。修法：`start()` 新建前先 `end` 掉 `Activity<PetAttributes>.activities` 全部。
+- ⚠️ **不能靠高频 `update()` 做持续动画。** 实测 2.5 秒一帧推几帧后系统**静默丢弃**更新，
+  日志还在刷、界面已冻住。要长期动就用 `symbolEffect`（如 `.variableColor.iterative`），
+  系统自行渲染、不花预算。
+- ⚠️ **`update()` 只在内容真变了时才推**，且**别读 `activity.content.state` 去自增计数器**：
+  进后台后本地 content 不再回写，读出来永远停在同一个值。
+- **灵动岛只在 App 不在前台时显示**：App 在前台时系统隐藏活动界面，测「岛里有什么」
+  必须先切后台（`devicectl device process launch <别的 bundleID>`）。
+- ⚠️ **`pymobiledevice3 ... screenshot` 会把灵动岛那块涂掉**（拍出来是壁纸色），
+  岛上内容一律看不到；**锁屏**截图能看到岛。
+- ⚠️ **别用「岛区暗像素数」判断内容**：锁屏/主屏幕壁纸深浅差异极大，会被背景带偏。
+  改用**目标特征色**计数（猫 = 「R 明显大于 G 且 R>120」）。
+- 📏 素材尺寸硬约束：H.264 `yuv420p` 要求两边都是**偶数**；当动画封面还**必须正好 3:4**
+  （1080×1440 同时满足）。
+
 ## 注意
 
 - 仅个人学习自用；视频版权归原作者，不要二次发布。
