@@ -397,7 +397,21 @@ tools/d2m.sh shot /tmp/x.png  # 截真机屏幕
 - 真机跑自检演示：`tools/d2m.sh logs D2M_JUMP_DEMO=1` / `D2M_MODE_DEMO=1` /
   `D2M_PREVIEW_DEMO=1`（脚本会把开关转成设备侧要的 `DEVICECTL_CHILD_` 前缀）。
 - ⚠️ **续播/切歌这类「要点一下才能看到」的行为，用 `D2M_JUMP_DEMO=1` 验**（`MediaPlayer.runJumpDemoIfRequested()`，`RootView` 的 `.task` 里调）：自动「听 6 秒 → 切下一首 → 再 6 秒 → 切回上一首」，全走真实链路。**别直接把 `previous()` 写进演示** —— 它带「播放 3 秒内才真切歌」的规矩，6 秒后调它只会回到本首开头、什么都验不到，要直接 `index -= 1; startCurrent(restoringPosition: true)`。实测输出：`存档《1小时…》：933s` → `切歌续播：《1小时…》从 933s 接上`，正好接回离开的那一刻。
-- 截真机屏幕（不用 WebDriverAgent）：`xcrun devicectl device capture screenshot --device <UDID> --destination /tmp/x.png`。
+- 截真机屏幕（不用 WebDriverAgent）：**`devicectl` 没有截图子命令**，用 pymobiledevice3：
+  `python3 -m pymobiledevice3 developer dvt screenshot /tmp/x.png`。
+  - ⚠️ 这条以前写成 `xcrun devicectl device capture screenshot --device …`，**是假的**：
+    `xcrun devicectl --help` 只有 device / diagnose / list / manage 四层，`device` 下面
+    没有 `capture`，敲下去得到的是 `Error: Unknown option '--device'`（`capture` 不存在，
+    所以 `--device` 被当成了 `device` 这一层的选项）。两台机器（Xcode 26.0.1 / 27.0）都没有。
+  - pymobiledevice3 **只装在 mini 上**，而且是系统 python3.9 的用户级安装，
+    所以 `command -v pymobiledevice3` 找不到它 —— 探测要用
+    `python3 -m pymobiledevice3 version`（这台 Mac 上没有，得 `pip3 install --user`）。
+    手机插在 mini 上，所以截图走远端。
+  - iOS 17+ 上它会自己退到 userspace tunnel（日志里一行
+    `Trying again over a no-root userspace tunnel`），不用手动开 tunneld。
+  - ⚠️ **锁屏/黑屏时 iOS 照样返回一张尺寸正常的 PNG**，只是内容全白/全黑。
+    不查证就会把「截到一片白」当成截图成功，然后看图的人以为 App 白屏了。
+    `tools/d2m.sh shot` 会解压 PNG 数一下原始像素的取值种类，纯色（≤4 种）就点破。
 - 安装：`devicectl install` 成功后必须再 `process launch` 一次，才算「装完能跑」。**但装之前先确认没有正在跑的下载**（见「通用：命令行构建并安装到真机」第 6 条）—— 安装会终止 App，YouTube 那种已经花钱开了 run 的任务一断就白花。
 - ⚠️ 真机**远程点击不可靠**：WebDriverAgent 这类远程控制方案依赖设备已信任开发者证书，证书没信任时直接起不来，反复重试很费时（每次探测约 20 秒）。命令行能稳定做到的是**安装、启动、截图**；凡是要点一下才能看到的（点歌、看迷你条、收键盘）就请用户手点，然后自己截图核对。
 
@@ -422,7 +436,7 @@ Apple 把 Live Activity 的单帧动画限死 2 秒，又明说「不要当成�
 
 - ⚠️ **灵动岛只在 App 不在前台时显示**：App 在前台时系统隐藏活动界面，测「岛里有什么」
   必须先切后台（`devicectl device process launch <别的 bundleID>`）。
-- ⚠️ **`pymobiledevice3 ... screenshot` 会把灵动岛那块涂掉**（拍出来是壁纸色），
+- ⚠️ **`pymobiledevice3 ... dvt screenshot` 会把灵动岛那块涂掉**（拍出来是壁纸色），
   岛上内容一律看不到；**锁屏**截图能看到岛。
 - ⚠️ **别用「岛区暗像素数」判断内容**：锁屏/主屏幕壁纸深浅差异极大，会被背景带偏。
   改用**目标特征色**计数（猫 = 「R 明显大于 G 且 R>120」）。

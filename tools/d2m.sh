@@ -363,22 +363,85 @@ cmd_logs() {
 
 # ---------------------------------------------------------------- 截图
 
+# ⚠️ 截图**不是** `devicectl` 干的 —— 它压根没有截图子命令。
+# `xcrun devicectl --help` 只有 device / diagnose / list / manage 四层；
+# 在 `device` 下面敲 `capture screenshot` 会得到
+# `Error: Unknown option '--device'`（因为 `capture` 不存在，devicectl 把
+# `--device` 当成了 `device` 这一层的选项）。
+#
+# 真做法是 pymobiledevice3 的 DVT 接口：`developer dvt screenshot <out>`。
+# iOS 17+ 上它会自己退到 userspace tunnel（日志里会打一行 "Trying again over
+# a no-root userspace tunnel"），不用手动开 tunneld。
+#
+# 这台 Mac 上**没装** pymobiledevice3（只有 mini 上有，装在系统 python3.9 的
+# 用户级 site-packages 里，所以 `command -v pymobiledevice3` 找不到它 ——
+# 想探测得用 `python3 -m pymobiledevice3 version`）。手机通常插在 mini 上，
+# 所以截图基本都走远端。
+PYMOB="python3 -m pymobiledevice3"
+
+# 过滤 pymobiledevice3 的名场面噪声（urllib3 的 LibreSSL 警告 + tunnel 回退提示）
+pymob_noise='NotOpenSSLWarning|warnings\.warn|Trying again over'
+
+# PNG 是不是「一片纯色」。
+#
+# ⚠️ 这一步不能省：**手机锁屏/黑屏时 iOS 照样返回一张尺寸正常的 PNG**，
+# 只是内容全白/全黑。不查的话「截到一片白」会被报成截图成功 —— 而人看图时
+# 只会以为 App 白屏了，方向直接跑偏。判据是解压后的原始像素字节里
+# 不同取值的个数：真实界面有几百种，纯色图只有个位数。
+png_is_blank() {
+  python3 - "$1" <<'PYEOF'
+import sys, zlib, struct
+try:
+    d = open(sys.argv[1], "rb").read()
+except OSError:
+    print("error"); sys.exit(0)
+if d[:8] != b"\x89PNG\r\n\x1a\n":
+    print("notpng"); sys.exit(0)
+i, idat = 8, b""
+while i + 8 <= len(d):
+    ln = struct.unpack(">I", d[i:i + 4])[0]
+    typ = d[i + 4:i + 8]
+    if typ == b"IDAT":
+        idat += d[i + 8:i + 8 + ln]
+    if typ == b"IEND":
+        break
+    i += 12 + ln
+try:
+    raw = zlib.decompress(idat)
+except zlib.error:
+    print("error"); sys.exit(0)
+print("blank" if len(set(raw)) <= 4 else "content")
+PYEOF
+}
+
 cmd_shot() {
   local out="${1:-/tmp/d2m-shot.png}"
   require_target
+  local tmp err size verdict
   if [[ "${ROUTE}" == "remote" ]]; then
-    # 远端截到它自己的 /tmp，再拉回来 —— devicectl 的 --destination 是远端路径
-    local tmp="/tmp/d2m-shot-$$.png"
-    ssh "${SSH_OPTS[@]}" "${D2M_REMOTE}" \
-      "xcrun devicectl device capture screenshot --device ${DEVICE} --destination ${tmp}" >/dev/null 2>&1 \
-      || die "截图失败（设备可能又锁上了）"
+    # 远端先截到它自己的 /tmp，再拉回来
+    tmp="/tmp/d2m-shot-$$.png"
+    err="$(ssh "${SSH_OPTS[@]}" "${D2M_REMOTE}" \
+      "cd /tmp && ${PYMOB} developer dvt screenshot ${tmp} 2>&1" 2>&1 \
+      | grep -viE "${pymob_noise}")"
+    # 把 pymobiledevice3 的原话带出来，别自己编一个原因
+    ssh "${SSH_OPTS[@]}" "${D2M_REMOTE}" "test -s ${tmp}" 2>/dev/null \
+      || die "截图没生成（远端 ${D2M_REMOTE}）。pymobiledevice3 说：${err:-（没有输出，可能没装：python3 -m pymobiledevice3 version）}"
     scp "${SSH_OPTS[@]}" "${D2M_REMOTE}:${tmp}" "${out}" >/dev/null 2>&1 || die "取回截图失败"
     ssh "${SSH_OPTS[@]}" "${D2M_REMOTE}" "rm -f ${tmp}" >/dev/null 2>&1 || true
   else
-    xcrun devicectl device capture screenshot --device "${DEVICE}" --destination "${out}" >/dev/null 2>&1 \
-      || die "截图失败（设备可能又锁上了）"
+    err="$(${PYMOB} developer dvt screenshot "${out}" 2>&1 | grep -viE "${pymob_noise}")"
+    [[ -s "${out}" ]] || die "截图没生成（本机）。pymobiledevice3 说：${err:-（没有输出，可能没装：pip3 install --user pymobiledevice3）}"
   fi
-  ok "截图：${out}"
+
+  verdict="$(png_is_blank "${out}")"
+  size="$(du -h "${out}" | cut -f1 | tr -d ' ')"
+  if [[ "${verdict}" == "blank" ]]; then
+    warn "截图是一张**纯色图**（${size}）—— 手机多半锁着/黑屏。"
+    warn "解锁、让屏幕亮着，再截一次。文件留在 ${out} 供你确认。"
+    return 0
+  fi
+  ok "截图：${out}（${size}）"
 }
 
 # ---------------------------------------------------------------- 其它
