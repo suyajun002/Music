@@ -117,6 +117,9 @@ final class MediaLibrary: ObservableObject {
             try? fileManager.removeItem(at: artwork)
         }
         items.removeAll { $0.id == item.id }
+        // 顺带清掉这首的「跳过前奏」记录：条目都没了，留着那个秒数只会让 plist 越攒越长，
+        // 而且同一 id 哪天又下回来会莫名其妙带着一个旧的起点。
+        Task { @MainActor in IntroSkip.shared.forget(item.id) }
         // 删掉不等于「当没下过」：YouTube 是按首花钱的，留个记录好在下一次贴同一条链接时
         // 明确告诉用户「这条下过又删了」，由他决定要不要再花一次，而不是默默重下。
         if let raw = item.sourceURL { remember(deleted: raw, title: item.title) }

@@ -49,6 +49,8 @@ struct RootView: View {
             await service.adoptExternalMedia()
             player.resumeLastPlayback(from: service.library.items)
             await player.runJumpDemoIfRequested()
+            await player.runModeDemoIfRequested()
+            await player.runPreviewDemoIfRequested()
             await service.submitDemoLinkIfRequested()
         }
         // 启动时识别一次剪贴板：确认框挂在这里，用户停在哪个页签都能看到。

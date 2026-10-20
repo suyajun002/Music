@@ -25,6 +25,7 @@ struct PlayerView: View {
             titleBlock
             scrubber
             transport
+            modeRow
             volumeRow
 
             Spacer(minLength: 12)
@@ -145,6 +146,32 @@ struct PlayerView: View {
         .foregroundStyle(.primary)
         .padding(.top, 18)
         .padding(.bottom, 14)
+    }
+
+    /// 播放模式（顺序 / 随机）。对齐音乐 App：**就一颗开关**，亮着=随机、灰着=顺序，
+    /// 位置在传输键下面、音量上面。用 `Button` 而不是 `Toggle`：音乐 App 那颗键
+    /// 是按一下切换、并用**高亮**表示状态，不是开关那种滑块样式。
+    /// 图标沿用音乐 App 的 `shuffle` / `list.bullet`（顺序播放那一档）。
+    private var modeRow: some View {
+        HStack {
+            Button {
+                player.toggleMode()
+            } label: {
+                Image(systemName: player.mode == .shuffle ? "shuffle" : "list.bullet")
+                    .font(.system(size: 17))
+                    // 随机态高亮成主题色，顺序态压成灰色 —— 一眼看出现在哪一档
+                    .foregroundStyle(player.mode == .shuffle ? Color.accentColor : Color.secondary)
+                    .frame(width: 44, height: 32)
+            }
+            .buttonStyle(.plain)
+            // 无障碍：光看图标说不出「现在是哪一档」，把当前模式念出来
+            .accessibilityLabel(player.mode.label)
+            .accessibilityHint("双击切换顺序播放或随机播放")
+
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 6)
     }
 
     private var volumeRow: some View {
