@@ -85,7 +85,7 @@ xcodebuild -project ios/Douyin2MP3/Douyin2MP3.xcodeproj -scheme Douyin2MP3 \
 
 ## 取流原理
 
-全部是确定性 HTTP 请求，没有签名链、没有模型。踩过的坑都写在 `skills/douyin-iphone-app/SKILL.md`。
+全部是确定性 HTTP 请求，没有签名链、没有模型。踩过的坑见下面的表格和清单。
 
 | 步骤 | 请求 | 关键点 |
 |---|---|---|
@@ -124,13 +124,12 @@ ios/Douyin2MP3/              iPhone App（SwiftUI，零依赖）
     JSONEscapes.swift          标题转义解码
   Douyin2MP3/Views/            资料库 / 转视频 / 全屏播放 / 迷你播放条
 design/                      图标源文件（SVG）与 1024 PNG
-skills/douyin-iphone-app/    配套的 AI 编码助手 skill
 legacy/mac-agent/            早期方案：Mac 上常驻 agent + ffmpeg 出 MP3（已废弃，留作参考）
 ```
 
 ## 配套 skill
 
-`skills/douyin-iphone-app/SKILL.md` 是给 AI 编码助手（Claude Code / Codex 等）用的 skill 文件，记了取流链路、全部踩坑、命令行构建安装真机的完整流程和 UI 结构约定。把它放进助手的 skill 目录，再让助手改这个 App，能省掉大量重复试错。
+早期版本在仓库里带过一份给 AI 编码助手（Claude Code / Codex）用的 skill 文件，记了取流链路、全部踩坑、命令行构建安装真机的完整流程和 UI 结构约定。**现在它只在作者本机维护，仓库里不再保留**（同一份内容维护两个副本必然对不上）。想照着改这个 App，看本文件的「取流原理」和「项目结构」两节，加上代码里的注释就够起步。
 
 ## 免责声明
 
