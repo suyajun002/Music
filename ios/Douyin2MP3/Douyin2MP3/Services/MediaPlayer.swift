@@ -106,7 +106,7 @@ final class MediaPlayer: ObservableObject {
     /// 只影响这一遍播放，**不写盘**（写盘的是 `IntroSkip`）。
     ///
     /// 为什么试听不新增一个播放器、直接把这段塞给 `MediaPlayer` 最省事：
-    /// 1. 它就有一个 AVPlayer，音量、锁屏、灵动岛、萌宠全都已经挂在上面了 ——
+    /// 1. 它就有一个 AVPlayer，音量、锁屏、动画封面全都已经挂在上面了 ——
     ///    再开一路 AVPlayer 就等于再养一套这些，还多一层「两路声音谁说了算」。
     /// 2. 用户要的是「改完立马切到这首歌听」：让它跳到这首、按试听区间放，
     ///    跟「点这首歌来听」走的是同一条路，手感一致。
@@ -155,11 +155,6 @@ final class MediaPlayer: ObservableObject {
         order = plan.order
         index = plan.index
         startCurrent(restoringPosition: true)
-        // 起萌宠。放在 `startCurrent` 之后：那时 `currentTitle` 才有值。
-        // 起失败不致命（用户可能在系统设置里关了 Live Activities），播放不受影响。
-        if let title = currentItem?.title {
-            PetActivity.shared.start(title: title)
-        }
     }
 
     /// 当前这首（`index` 指的是 `order`，真正的内容在 `queue`）。
@@ -355,8 +350,6 @@ final class MediaPlayer: ObservableObject {
         player.play()
         isPlaying = true
         updateNowPlaying()
-        // 换歌即刷新萌宠（`force` 绕过节流：换歌必须立刻反映，不然标题会停在上一首）
-        PetActivity.shared.update(title: item.title, isPlaying: true, force: true)
         if restoringPosition { restorePosition(for: item) } else { applyIntroSkip(for: item) }
     }
 
@@ -468,7 +461,7 @@ private func finishAtTrim() {
     /// 按**还没保存**的数字试听 `[from, to]`：跳到这首、放这一段、到点自己停。
     ///
     /// 能直接把区间盖在主播放器上，是因为它本来就有一条完整的播放链路
-    /// （AVPlayer、锁屏、灵动岛、萌宠都在上面），试听要的正是「跟真放一样，只是区间不同」。
+    /// （AVPlayer、锁屏、动画封面都在上面），试听要的正是「跟真放一样，只是区间不同」。
     /// 另开一路 AVPlayer 反而要再养一套这些东西，还要处理「两路声音谁说了算」。
     ///
     /// ⚠️ 换一首试听时**不还原回原来那首**。用户是从编辑框里点进来的，
@@ -661,8 +654,6 @@ private func finishAtTrim() {
         } else {
             player.play()
         }
-        // 暂停/继续要立刻反映到萌宠上（绕过节流），不然锁屏上的状态会滞后
-        PetActivity.shared.update(title: currentTitle, isPlaying: player.timeControlStatus == .playing, force: true)
     }
 
     /// 暂停。给「跳过开头/结尾」编辑框里的试听用：试听期间不能让两边同时出声。
@@ -751,8 +742,6 @@ private func finishAtTrim() {
         previewRange = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
-        // 收掉萌宠：音乐停了不该留一张僵尸卡片在锁屏上
-        PetActivity.shared.end()
         queue = []
         order = []
         index = 0
@@ -813,9 +802,6 @@ private func finishAtTrim() {
                     self.savePosition()
                 }
                 self.updateNowPlaying()
-                // 这里**故意不**碰 Live Activity：它只在歌名/播放状态真的变化时
-                // 才需要更新（见 `PetActivity.update` 的注释）。以前这里每 0.5 秒
-                // 推一帧想做点头动画，很快耗尽系统更新预算，猫动几下就永远不动了。
             }
         }
     }

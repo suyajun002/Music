@@ -100,8 +100,8 @@ triggers:
 ## 发布：`tools/d2m.sh`（优先用它，别手抄命令）
 
 仓库里有现成的发布工具，**构建 / 安装 / 启动 / 截图 / 看日志**都在里面。
-手抄那些命令的代价很实在：少传一个 `D2M_APP_ID` 就会得到一个扩展对不上、
-灵动岛起不来的包，而报错现场离真正的原因很远。
+手抄那些命令的代价很实在：少传一个 `D2M_APP_ID` / `DEVELOPMENT_TEAM`
+就会得到一个签名不对、装不上的包，而报错现场离真正的原因很远。
 
 ```bash
 tools/d2m.sh deploy --yes     # 编译 + 安装 + 启动（最常用）
@@ -224,7 +224,7 @@ tools/d2m.sh shot /tmp/x.png  # 截真机屏幕
 要听的是**还没保存的数字**，而播放器按存档放 —— 这是这个功能真正的难点。
 
 - **试听走主播放器，不另开 AVPlayer**：它本来就有一条完整链路（AVPlayer、锁屏、
-  灵动岛、萌宠都在上面），试听要的正是「跟真放一样，只是区间不同」。
+  动画封面都在上面），试听要的正是「跟真放一样，只是区间不同」。
   另开一路等于再养一套这些东西，还要处理「两路声音谁说了算」。
 - 实现是 `MediaPlayer` 里一个 `previewRange` **盖在存档设置之上**：
   `activeEnd = previewRange?.to ?? effectiveEnd`。
@@ -401,25 +401,26 @@ tools/d2m.sh shot /tmp/x.png  # 截真机屏幕
 - 安装：`devicectl install` 成功后必须再 `process launch` 一次，才算「装完能跑」。**但装之前先确认没有正在跑的下载**（见「通用：命令行构建并安装到真机」第 6 条）—— 安装会终止 App，YouTube 那种已经花钱开了 run 的任务一断就白花。
 - ⚠️ 真机**远程点击不可靠**：WebDriverAgent 这类远程控制方案依赖设备已信任开发者证书，证书没信任时直接起不来，反复重试很费时（每次探测约 20 秒）。命令行能稳定做到的是**安装、启动、截图**；凡是要点一下才能看到的（点歌、看迷你条、收键盘）就请用户手点，然后自己截图核对。
 
-## 灵动岛 / Live Activity（萌宠）
+## 已撤掉：灵动岛 / Live Activity（别再往回加）
 
-界面必须住在 widget extension（`Douyin2MP3Pet`），宿主 App 只负责
-`Activity.request / update / end`。三个坑现象都是「空白或不动」，根因完全不同。
+**这套东西试了两轮（`ab7adca` 建 → `b432784` 撤 → `9bf501c` 拿回 → `53c1bf4` 改造），
+2026-10-19 用户定「取消」，连 widget extension 一起删干净了。**
+再想加之前先读完这段，别第三次踩同一个坑。
 
-- ⚠️ **扩展里的图片必须走 Asset Catalog，散装 PNG 会静默失败。** `Image("name")` 对
-  bundle 根的散装 PNG 解析不可靠，**失败不报错、直接画空白** → 灵动岛成了「一条黑条、
-  里面什么都没有」。先查扩展包里有没有 `Assets.car`。修法：放进 `.xcassets` 且放在
-  `Shared/`（两个 target 都挂载；App 的 `Resources/` 扩展读不到）。
-  验证：`xcrun assetutil --info <appex>/Assets.car | grep '"Name"'`。
-- ⚠️ **活动会泄漏，攒够后新活动一律 `targetMaximumExceeded`。** 进程被强杀时走不到
-  `end()`。**极具误导性**：屏幕上那条「不动的猫」其实是**僵尸活动**的画面，日志却说
-  「请求失败」。修法：`start()` 新建前先 `end` 掉 `Activity<PetAttributes>.activities` 全部。
-- ⚠️ **不能靠高频 `update()` 做持续动画。** 实测 2.5 秒一帧推几帧后系统**静默丢弃**更新，
-  日志还在刷、界面已冻住。要长期动就用 `symbolEffect`（如 `.variableColor.iterative`），
-  系统自行渲染、不花预算。
-- ⚠️ **`update()` 只在内容真变了时才推**，且**别读 `activity.content.state` 去自增计数器**：
-  进后台后本地 content 不再回写，读出来永远停在同一个值。
-- **灵动岛只在 App 不在前台时显示**：App 在前台时系统隐藏活动界面，测「岛里有什么」
+撤掉的**根因不是「跑不通」** —— 实测它跑得通：不播音频时自建活动能在灵动岛显示；
+音频播放中自建活动和系统「正在播放」也能共存。真正的问题是**观感上限低**：
+Apple 把 Live Activity 的单帧动画限死 2 秒，又明说「不要当成持续动画的 App 视图」，
+宠物只能靠宿主周期性 `update()` 换姿态假装在动。而且 2.5 秒一帧推几帧就会
+**静默丢弃**更新（日志还在刷、界面已经冻住），因为每次 `update` 都花系统的更新预算。
+
+留下来的那条路是 **`Services/AnimatedArtwork.swift`（动画封面）** ——
+走 `MPMediaItemAnimatedArtwork` / `MPNowPlayingInfoProperty3x4AnimatedArtwork`，
+让系统在「正在播放」里真的播一段循环视频，连续动画不花预算。
+**它是另一套机制、和 Live Activity 无关**，删 Live Activity 时不用动它。
+
+真要再动这块，下面这几条是当时花时间换来的，跟实现方式无关、还能用：
+
+- ⚠️ **灵动岛只在 App 不在前台时显示**：App 在前台时系统隐藏活动界面，测「岛里有什么」
   必须先切后台（`devicectl device process launch <别的 bundleID>`）。
 - ⚠️ **`pymobiledevice3 ... screenshot` 会把灵动岛那块涂掉**（拍出来是壁纸色），
   岛上内容一律看不到；**锁屏**截图能看到岛。
@@ -427,6 +428,12 @@ tools/d2m.sh shot /tmp/x.png  # 截真机屏幕
   改用**目标特征色**计数（猫 = 「R 明显大于 G 且 R>120」）。
 - 📏 素材尺寸硬约束：H.264 `yuv420p` 要求两边都是**偶数**；当动画封面还**必须正好 3:4**
   （1080×1440 同时满足）。
+- **工程侧的连带物**（删的时候一个都不能漏）：app 的 `Info.plist` 里
+  `NSSupportsLiveActivities`、`Shared/PetAttributes.swift`、`Services/PetActivity.swift`、
+  `Douyin2MP3Pet/` 整个目录、`PetInfo.plist`，以及 `project.pbxproj` 里的
+  appex 引用 / target / Embed App Extensions phase / TargetDependency /
+  ContainerItemProxy / 两套构建配置。**`Shared/` 只剩这一个文件，一并删掉**，
+  并把 app target 的 `fileSystemSynchronizedGroups` 里那行也去掉。
 
 ## 注意
 

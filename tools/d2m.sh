@@ -3,8 +3,8 @@
 # d2m.sh —— douyin2mp3 的构建 / 安装 / 启动 / 截图 一条龙。
 #
 # 为什么要有这个脚本：这些命令以前散在 SKILL.md 的散文里，每次都要照着抄一遍，
-# 抄漏一个参数（比如 `D2M_APP_ID` 决定的是 app + 扩展**一对** bundle id）就得到
-# 一个扩展对不上、灵动岛起不来的包，而报错现场离真正的原因很远。
+# 抄漏一个参数（比如 `D2M_APP_ID`、`DEVELOPMENT_TEAM`）就得到一个签名不对、
+# 装不上的包，而报错现场离真正的原因很远。
 #
 # ★ 个人值不进仓库：团队 ID / bundle id / 设备 ID 从**环境变量或配置文件**读，
 #   脚本里只有占位默认值。放到 ~/.config/d2m/env 就行（见下面「配置」）。
@@ -32,7 +32,7 @@
 #   D2M_TEAM       Apple 开发者团队 ID（构建必需）。查法：
 #                    security find-certificate -c "Apple Development: <email>" -p \
 #                      | openssl x509 -noout -subject | grep -o 'OU=[^,]*'
-#   D2M_APP_ID     App 的 bundle id，扩展是 "<它>.Pet"（默认 com.example.douyin2mp3）
+#   D2M_APP_ID     App 的 bundle id（默认 com.example.douyin2mp3）
 #   D2M_DEVICE     本机直连时的设备 UDID（不设 = 自动挑第一台可用设备）
 #   D2M_REMOTE     ssh 目标，如 <用户>@<mac-mini-ip>；留空 = 不走远端
 #   D2M_REMOTE_DEVICE  远端那台机器上设备的 **CoreDevice UUID**（跟本机看到的
@@ -70,8 +70,6 @@ if [[ -f "${HOME}/.config/d2m/env" ]]; then
 fi
 
 D2M_APP_ID="${D2M_APP_ID:-com.example.douyin2mp3}"
-# 扩展的 bundle id 是 "<app id>.Pet"（工程里写的是 "$(D2M_APP_ID).Pet"）
-PET_APP_ID="${D2M_APP_ID}.Pet"
 D2M_REMOTE="${D2M_REMOTE:-}"
 D2M_REMOTE_DIR="${D2M_REMOTE_DIR:-~/d2m-build}"
 SSH_OPTS=(-o ConnectTimeout=15 -o BatchMode=yes)
@@ -191,9 +189,7 @@ cmd_build() {
   info "${DIM}编译 ${SCHEME}（team=${D2M_TEAM} app_id=${D2M_APP_ID}）${OFF}"
   local log
   log="$(mktemp)"
-  # ⚠️ D2M_APP_ID 必须传：工程里是占位值 com.example.douyin2mp3，
-  # 而 app 和 widget 扩展的 bundle id 都从它派生（"$(D2M_APP_ID)" 和 "$(D2M_APP_ID).Pet"）。
-  # 只改 app 不改扩展的话，扩展对不上、灵动岛起不来。
+  # ⚠️ D2M_APP_ID 必须传：工程里是占位值 com.example.douyin2mp3。
   # ⚠️ DEVELOPMENT_TEAM 同理，是个人值，留在命令行、不写回仓库。
   if ! xcodebuild \
       -project "${PROJECT}" \
