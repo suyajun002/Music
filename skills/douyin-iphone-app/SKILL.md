@@ -97,7 +97,79 @@ triggers:
 **不花命令行验证**：`swiftc -O Services/MediaExtracting.swift Models/MediaSource.swift Services/YouTubeExtractor.swift Services/DouyinExtractor.swift Services/JSONEscapes.swift main.swift -o yttest`（`DouyinExtractor.swift` 是纯 Foundation，可以拉进来提供 `DouyinConfig`，省得写桩；`YouTubeExtractor` 里解析用的 `ResultItem(json:)` 是 `internal`，命令行直接喂真实 JSON）。62 项：来源路由、扩展名/计费、视频 ID 正则、抠链接、**去重键**（同一个视频五种写法算一条、抖音短链路径大小写不能抹平）、Apify 响应解析（成功 / 失败 / 空 / 垃圾地址）、run 状态终态、补 token 重试、进度换算、mp3 魔数校验。
 **花钱的端到端验证**：`D2M_YT_URL=<链接>` 环境变量起 App（`ConversionService.submitDemoLinkIfRequested()`）走真实 Apify 链路，**跑之前先问用户**（一次约 ¥0.5）。
 
-## 通用：命令行构建并安装到真机
+## 发布：`tools/d2m.sh`（优先用它，别手抄命令）
+
+仓库里有现成的发布工具，**构建 / 安装 / 启动 / 截图 / 看日志**都在里面。
+手抄那些命令的代价很实在：少传一个 `D2M_APP_ID` 就会得到一个扩展对不上、
+灵动岛起不来的包，而报错现场离真正的原因很远。
+
+```bash
+tools/d2m.sh deploy --yes     # 编译 + 安装 + 启动（最常用）
+tools/d2m.sh build            # 只编译
+tools/d2m.sh install          # 只安装（会先问一句有没有下载在跑）
+tools/d2m.sh devices          # 两台机器各自能看到哪些设备 + 本次会走哪条路
+tools/d2m.sh logs D2M_PREVIEW_DEMO=1   # 启动并挂控制台看日志
+tools/d2m.sh shot /tmp/x.png  # 截真机屏幕
+```
+
+**个人值不进仓库**：团队 ID / bundle id / 设备 ID 从 `~/.config/d2m/env` 读，
+脚本里只有占位默认值（`D2M_TEAM` / `D2M_APP_ID` / `D2M_DEVICE` /
+`D2M_REMOTE` / `D2M_REMOTE_DEVICE` / `D2M_REMOTE_DIR`）。换台机器就把那个文件建一遍。
+
+**退出码 3 = 设备不可用**（手机锁着/没连上）。跟「代码有问题」分开，
+是为了别对着一条 4016 去查代码。看到 3 就请用户解锁点亮手机，**别反复重试**。
+
+### ⚠️ 手机经常不连在本机上 —— 要会用「远端当 USB 线」
+
+实测本机 `devicectl` 常常看不到手机（`unavailable`，甚至
+`Last Connection Date` 停在好几天前），而**另一台常开机的 Mac（下称「mini」）看得到**。
+反过来，那台 mini 的钥匙串里**没有本项目的签名证书**（是别人的打包机）。
+两边各缺一半，所以做法是：
+
+> **本机编译（签名在本机做完）→ rsync 传过去 → 远端只执行 `devicectl` 安装。**
+
+这不是我们发明的：`~/.agents/skills/tv-video-skill/scripts/deploy-remote.sh` 用的同一套路。
+`d2m.sh` 已经把这套内置了 —— `pick_route` 自动判断走哪条路（本机看不到就落远端），
+也可以用 `--local` / `--remote` 强制。所以**正常情况下你什么都不用管**，
+只有排查时才需要知道底下发生了这件事。
+
+- ⚠️ **两边看到的设备标识不是同一个字符串**：本机是 **UDID**（8 位 + 16 位、一个连字符），
+  远端是 **CoreDevice UUID**（8-4-4-4-12、四个连字符）。
+  **别混用** —— 拿本机的 UDID 去远端装会报 `error 1000 / device not found`。
+  `tools/d2m.sh devices` 会把两边的都打出来；真实值放在 `~/.config/d2m/env`。
+- ⚠️ **`D2M_REMOTE_DIR` 必须是远端绝对路径**。写 `~/d2m-build` 的话 `source` 时
+  **本地**就把 `~` 展开成了本机家目录，rsync 会去往 `/Users/<本机用户>/...` 写、
+  报 `mkpath: Permission denied`。
+- ⚠️ **安装必须硬判结果**。别处挂过 `|| true`（见参考脚本里的注释），设备掉线时
+  报错被吞掉、脚本照样打「✓ 完成」，看上去装成功了 —— 实际手机上还是旧版本。
+  `d2m.sh` 里判的是输出必须含 `App installed`。
+- ⚠️ **设备会在两台机器之间「闪现」**：本机刚看到 `available`，下一条命令就
+  `error 4000 / peer is no longer reachable`。所以 `d2m.sh` 在非 4016 的失败上会
+  **先换另一条路再判死** —— 直接判失败会让用户白等一轮编译。
+- 📌 参考脚本里那条「自检完必须干净重启一次」也适用：`devicectl ... --console`
+  被 Ctrl-C 断掉的是 **ssh 这头**，手机上那个 App 还带着自检参数在跑。
+  `runPreviewDemo` 这类演示跑完记得 `tools/d2m.sh launch` 重启一次，
+  否则用户拿到手机时点哪儿都被自检逻辑劫持。
+
+### 用 shell 脚本做这件事时踩过的坑（Mac 自带 bash 3.2）
+
+- ⚠️ **变量后面紧跟中文/全角字符必须加花括号**：`$SCHEME（team=…）` 里的
+  `（` 是多字节字符，会被 bash 算进变量名，报 `SCHEME（: unbound variable`。
+  写 `${SCHEME}（…）`。**批量加花括号时别把 `"$@"` 改成 `"${@}"`** ——
+  bash 3.2 配 `set -u` 时，无参数下 `"${@}"` 会报 `@: unbound variable`，
+  而 `"$@"` 正常。
+- ⚠️ **bash 3.2 + `set -u` 下空数组不能直接展开**：`env "${arr[@]}" cmd` 在
+  `arr` 为空时报 `@: unbound variable`（用 `env` 是这么写、直接 `cmd "${arr[@]}"` 也一样）。
+  老写法 `${arr[@]+"${arr[@]}"}`，或判 `${#arr[@]} -gt 0` 再展开。
+- ⚠️ **`grep available` 会匹配上 `unavailable`**（子串）。判断设备可用性必须
+  **先 `grep -v unavailable` 再 `grep available`**，否则锁着的设备会被判成可用、
+  然后每条命令吃一条 4016。
+- ⚠️ **`exit` 写在 `$(...)` 里退出不了脚本**：那是子 shell。`require_device`
+  这类"拿不到就退出"的函数必须把结果写进**全局变量**、不要用返回值 —
+  否则上层拿到空字符串接着往下走，最后死在一条莫名其妙的
+  `error 1000 (Name: )` 空设备名报错上，完全看不出真正原因是手机锁着。
+
+## 通用：从零命令行构建并安装到真机（新工程参考）
 
 不打开 Xcode GUI 也能建工程、签名、装真机：
 
@@ -105,12 +177,14 @@ triggers:
 2. **Info.plist 必须放在同步目录之外**，否则和自动生成清单冲突，报 `Multiple commands produce .../Info.plist`。
 3. **纯逻辑先用命令行验证**：`swiftc` 把那个 `.swift` 加一个 `main.swift` 编成 macOS 命令行，直接喂真实链接，不用模拟器/真机（本机没有 iOS 模拟器运行时也能验）。
 4. **拿团队 ID**：`security find-certificate -c "Apple Development: <email>" -p | openssl x509 -noout -subject`，取 `OU=`。
-5. **构建**：`xcodebuild -project X.xcodeproj -scheme X -destination 'generic/platform=iOS' -configuration Debug -allowProvisioningUpdates -derivedDataPath <稳定目录> build`
-6. **安装**：`xcrun devicectl device install app --device <UDID> <X.app>`（UDID 用 `xcrun devicectl list devices` 查）
+5. **构建/安装**：**直接用 `tools/d2m.sh`**（见上一节），别在别处再抄一份命令 ——
+   本项目的调用形状是 `-project ios/Douyin2MP3/Douyin2MP3.xcodeproj -scheme Douyin2MP3
+   -destination 'generic/platform=iOS' -configuration Debug -allowProvisioningUpdates
+   -derivedDataPath build`，外加 `DEVELOPMENT_TEAM=` 和 `D2M_APP_ID=` 两个个人值。
    - ⚠️ **装之前必须先确认 App 里没有正在下载的任务，有就等它下完再装。严格遵循。** 安装会终止正在运行的 App，而下载是进程内的 `URLSessionDownloadTask`：一装就断，抖音那条得重下，**YouTube 那条更贵 —— 已经开出去的 Apify run 照收费，钱花了歌没拿到**。确认方式：直接问用户（屏幕上就有「进行中 N · 等待 N」），不要靠猜、不要图快先装再说；同理，`process launch --terminate-existing` 也不要对着有下载在跑的 App 用。
 7. **启动**：`xcrun devicectl device process launch --device <UDID> <bundleID>`
 8. **首次必须由用户在手机上信任证书**：设置 → 通用 → VPN与设备管理 → 开发者App → 信任。否则报 “invalid code signature / profile has not been explicitly trusted”。这一步只能用户点，别尝试代劳。
-9. **免费个人团队 7 天过期**：到期 App 打不开，重跑第 5、6 步即可。
+9. **免费个人团队 7 天过期**：到期 App 打不开，重跑 `tools/d2m.sh deploy` 即可。
 10. **图标**：单尺寸 1024×1024 PNG + 资产目录 `AppIcon.appiconset`（`"platform":"ios"`、`size 1024x1024`）+ 构建设置 `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`；无设计稿时用 `rsvg-convert -w 1024 -h 1024 icon.svg -o icon-1024.png` 确定性出图。
 
 ## App 结构（对齐 Apple 音乐 App）
@@ -126,6 +200,65 @@ triggers:
 - ⚠️ **锁屏/控制中心要能快进，必须自己注册遥控命令**：只注册 play/pause/next/previous 的话，锁屏上**没有可拖的进度条** —— 表现为「锁屏上完全没法快进」（听 1~2 小时的长音频时这是唯一的快进手段）。要注册 `changePlaybackPositionCommand`（任意位置拖动，和 App 内进度条同一套 `seek`）。
 - ⚠️ **`skipForward/BackwardCommand`（±15 秒）和 ⏮/⏭ 是互斥的，别两个都开**：锁屏那块「正在播放」小组件**只有三个按钮位**，系统在「启用了 skip」时会用 ±15 顶掉切歌按钮，两组不会同时出现 —— 一旦启用，**锁屏上就再也切不了歌**，只能解锁进 App。2026-10-19 实测决策：**关掉 ±15、保住切歌**（切歌在锁屏上更高频，「跳一段」有进度条兜着、还能落任意位置）。关法是在 `registerRemoteCommands()` 里 `skipForwardCommand.isEnabled = false` / `skipBackwardCommand.isEnabled = false`（不 `addTarget` 不够，系统会自己禁用，但显式关掉意图明确）。注意 AirPods 双击/三击跟着走同一对命令，关掉后变成切歌。若哪天改回 ±15：`preferredIntervals` 类型是 `[NSNumber]`，`Double` 字面量**不能**隐式桥接，写 `[NSNumber(value: 15.0)]`。
 - ⚠️ **`isPlaying` 不能只手翻**：由 `player.observe(\.timeControlStatus)` 驱动（`.playing` → true、`.paused` → false、`.waitingToPlayAtSpecifiedRate` 保持现状），`toggle()` 也以 `player.timeControlStatus` 判断该 pause 还是 play。否则播完、被系统中断、缓冲时图标都和实际不符。
+
+## 跳过开头 / 结尾 + 编辑框里试听
+
+左滑歌曲 → 「跳过开头/结尾」编辑框，两张数字输入框，**只是播放时跳过、不改文件**。
+落点：`Services/IntroSkip.swift`（数据）+ `Services/MediaPlayer.swift`（播放侧）
+
+- **只有一个口径来源**：`MediaPlayer.activeEnd`。进度条、剩余时间、自动切歌、
+  锁屏那条进度条的时长（`MPNowPlayingInfoPropertyPlaybackDuration`）全都用它。
+  任何一处改回 `duration`，界面立刻自相矛盾：进度条到底了歌还在放，
+  或者停在 0:00 却说「还剩 12 秒」。
+- ⚠️ **锁屏那条进度条要交 `activeEnd` 而不是 `duration`**：交给系统真实时长的话，
+  设了跳过结尾的歌在系统的进度条上**永远走不到头**。
+- ⚠️ **`savePosition` 判「停在片尾」也要用 `activeEnd`**：设了跳过结尾的曲子会停在
+  `duration - 结尾秒数`，那一刻离真实末尾还差好几秒，用 `duration` 判的话
+  会把这个位置原样存下来，下次续播一进来就是「已经放完」。
+- ⚠️ **「续播点」和「跳过开头」取更靠后的那个**：上次听 5 秒就退出、而前奏起点是
+  12 秒 → 该从 12 秒起，不是从 5 秒接着听前奏；反过来续播点已经到 1:30 就别往回拽。
+  `restorePosition` 里 `max(saved, skip)` 就是这条。
+
+### 试听（「改完之后马上试听」）
+
+要听的是**还没保存的数字**，而播放器按存档放 —— 这是这个功能真正的难点。
+
+- **试听走主播放器，不另开 AVPlayer**：它本来就有一条完整链路（AVPlayer、锁屏、
+  灵动岛、萌宠都在上面），试听要的正是「跟真放一样，只是区间不同」。
+  另开一路等于再养一套这些东西，还要处理「两路声音谁说了算」。
+- 实现是 `MediaPlayer` 里一个 `previewRange` **盖在存档设置之上**：
+  `activeEnd = previewRange?.to ?? effectiveEnd`。
+- ⚠️ **试听不能等于保存**。真拿草稿去改 `IntroSkip`，用户按「取消」就回不去了
+  （值已经写进 UserDefaults）。"先听再决定"的前提是听的时候什么都不落地。
+- ⚠️ **试听到点绝不能当成「这首放完了」** —— 那会切下一首。用户点的是试听，
+  结果被扔到别的歌上，比不放还糟。`finishAtTrim()` 里第一件事就是判
+  `previewRange != nil` 并只收掉试听。
+- ⚠️ **光把保护写在 `finishAtTrim()` 里不够 —— 调用点不能提前判 `hasNext`。**
+  这里真错过一次，而且错得很隐蔽：周期观察者原本写的是
+  `if self.hasNext { 切下一首 } else { self.finishAtTrim() }`，
+  于是 `hasNext` 为真时**根本走不到** `finishAtTrim()`，那条保护形同虚设。
+  判断逻辑**只能有一个出口**：观察者无条件调 `finishAtTrim()`，
+  由它按「试听 → 有下一首 → 最后一首」的顺序自己分流。
+  只要在调用点再分叉一次，后面新增的任何保护都可能被绕过去。
+- 📌 **这条是 `D2M_PREVIEW_DEMO=1` 抓出来的，肉眼和单测都抓不到。**
+  当时的日志两行就把问题钉死了：
+  ```
+  试听演示 起播：《安靜》区间=4→7s activeEnd=7s 试听中=true   ← 区间生效了
+  试听演示 收尾：还在《茄子蛋 浪子回頭》上=false             ← 但被切走了
+  ```
+  所以自检要打**明白的是/否**（`✅ 通过` / `❌ 失败：…`），别只打事实让别人自己比对 ——
+  这类错在"事实"里看着挺正常，一眼扫过去不会觉得不对。
+- **换一首试听不还原回原曲**（停在那首、位置回 0:00），**同一首上试听才还原原位**
+  （那次点击没打算换歌）。不用 `addBoundaryTimeObserver`：`activeEnd` 判据 +
+  0.5 秒周期观察者已经够，多一个观察者就多一处要清理的东西。
+- ⚠️ **试听期间不写续播存档**：用户并没有真的听到这儿，存了的话下次续播会接到
+  试听那 3 秒上。
+- ⚠️ **别让人为了听 3 秒结尾等 4 分钟**：只设了跳过结尾时，试听区间取
+  「末尾往前 15 秒」；只设了开头取「起点往后 15 秒」；两头都没设取开头 15 秒。
+  按钮文案把区间写出来（`试听 3:57 → 4:12（0:15）`），一眼能看出填错没有。
+- 真机自检：`tools/d2m.sh logs D2M_PREVIEW_DEMO=1`
+  （`MediaPlayer.runPreviewDemoIfRequested()`）—— 验「试听区间压过存档设置」
+  和「到点不切歌」这两条命令行点不到 UI 就验不了的不变量。
 
 ## 底部条与键盘（iOS 26）
 
@@ -261,6 +394,8 @@ triggers:
 - 真机诊断：`DEVICECTL_CHILD_D2M_DEBUG=1 xcrun devicectl device process launch --console --terminate-existing --device <UDID> <bundleID>`，App 里 `D2M_DEBUG=1` 时才打印 `[d2m]` 取流/下载细节（默认关闭）。
 - ⚠️ **`DouyinDebug.log` 必须 `fflush(stdout)`**：`devicectl --console` 下 stdout 是块缓冲的管道，进程被 kill（`timeout`、`--terminate-existing`）时最后几行还在缓冲区里，日志会缺掉最关键的那几行 —— 看起来就像「这段代码根本没执行」，很容易顺着这个假象去查错地方。
 - ⚠️ **截图里读小字别硬猜**：确认框这类半透明 `Material` 卡片，像素取样分不出「环的颜色」和「卡片本身透出的背景色」（实测卡片的青色调来自背景透色，不是控件颜色）。要判断行为就让代码自己把结论打进日志，别靠肉眼看 3 像素高的字。
+- 真机跑自检演示：`tools/d2m.sh logs D2M_JUMP_DEMO=1` / `D2M_MODE_DEMO=1` /
+  `D2M_PREVIEW_DEMO=1`（脚本会把开关转成设备侧要的 `DEVICECTL_CHILD_` 前缀）。
 - ⚠️ **续播/切歌这类「要点一下才能看到」的行为，用 `D2M_JUMP_DEMO=1` 验**（`MediaPlayer.runJumpDemoIfRequested()`，`RootView` 的 `.task` 里调）：自动「听 6 秒 → 切下一首 → 再 6 秒 → 切回上一首」，全走真实链路。**别直接把 `previous()` 写进演示** —— 它带「播放 3 秒内才真切歌」的规矩，6 秒后调它只会回到本首开头、什么都验不到，要直接 `index -= 1; startCurrent(restoringPosition: true)`。实测输出：`存档《1小时…》：933s` → `切歌续播：《1小时…》从 933s 接上`，正好接回离开的那一刻。
 - 截真机屏幕（不用 WebDriverAgent）：`xcrun devicectl device capture screenshot --device <UDID> --destination /tmp/x.png`。
 - 安装：`devicectl install` 成功后必须再 `process launch` 一次，才算「装完能跑」。**但装之前先确认没有正在跑的下载**（见「通用：命令行构建并安装到真机」第 6 条）—— 安装会终止 App，YouTube 那种已经花钱开了 run 的任务一断就白花。
