@@ -1,6 +1,5 @@
 // 用途：主页面。粘贴即自动下载；任务卡片只显示「当前结论 + 一句话原因 + 动作」。
 import SwiftUI
-import UIKit
 
 struct ConvertView: View {
     @EnvironmentObject private var service: ConversionService
@@ -8,8 +7,6 @@ struct ConvertView: View {
     @Binding var showsSettings: Bool
     @State private var input = ""
     @State private var outcome: SubmitOutcome?
-    /// 「粘贴链接」按钮的失败原因。空着就是没出问题。
-    @State private var pasteNote: String?
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -29,28 +26,6 @@ struct ConvertView: View {
                             }
                         }
 
-                    HStack {
-                        Button("粘贴链接", systemImage: "doc.on.clipboard") {
-                            paste()
-                        }
-                        Spacer()
-                        Button("清空") {
-                            input = ""
-                            outcome = nil
-                            pasteNote = nil
-                            service.clearClipboardOutcome()
-                        }
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.subheadline)
-
-                    // 「点了没反应」是这类按钮最容易招人骂的地方，所以每一种「什么也没发生」
-                    // 都要说一句为什么 —— 要么读不到剪贴板，要么读到了但一条链接都没认出来。
-                    if let pasteNote {
-                        Text(pasteNote)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
                     if let notice {
                         Text(notice.text)
                             .font(.caption)
@@ -69,8 +44,6 @@ struct ConvertView: View {
                     }
                 } header: {
                     Text("链接")
-                } footer: {
-                    Text(footerText)
                 }
 
                 if !service.jobs.isEmpty {
@@ -118,18 +91,6 @@ struct ConvertView: View {
         }
     }
 
-    /// 页面底部那段说明。两条链路差别够大，值得在这儿说清楚，而不是等用户自己发现。
-    private var footerText: String {
-        var text = "粘贴后自动开始下载。打开 App（或从抖音、YouTube 切回来）时会自动识别剪贴板里的链接，识别到会先弹框让你确认。完成后会出现在「资料库」；已经在资料库里的不会重复下载，锁屏和后台都能继续播放。"
-        text += "\n\n抖音：在手机上直接解析，不花钱。"
-        if service.hasApifyToken {
-            text += "YouTube：走 Apify，每首约 ¥0.5，一首 1~3 分钟。"
-        } else {
-            text += "YouTube：还没填 Apify token，点右上角齿轮填一次。"
-        }
-        return text
-    }
-
     /// 结论和「重新下载」按钮都看它：手输优先，没有就用剪贴板确认框那次的。
     private var shownOutcome: SubmitOutcome? {
         outcome ?? service.clipboardOutcome
@@ -160,33 +121,6 @@ struct ConvertView: View {
         if !outcome.deleted.isEmpty { parts.append("\(outcome.deleted.count) 条下过又删了，没重下") }
         if outcome.unsupported > 0 { parts.append("\(outcome.unsupported) 条不支持") }
         return parts.joined(separator: "，")
-    }
-
-    /// 「粘贴链接」按钮。
-    ///
-    /// ⚠️ 三个坑都在这一个按钮上，历史上它「点了没反应」就是踩了这三个：
-    /// 1. `UIPasteboard.general.string` 在**用户拒绝过系统粘贴授权**之后会一直返回 nil
-    ///    （iOS 16 起的系统框点过「不允许」就记住了），不能默默什么都不做；
-    /// 2. 剪贴板里不是文本（图片、文件）时同样是 nil；
-    /// 3. 粘进来的内容**和输入框里现有的完全一样**时，`input` 没变 →
-    ///    `.task(id: input)` 不触发 → 看着就像按钮坏了。所以这种情况要自己提交一次。
-    private func paste() {
-        guard let text = UIPasteboard.general.string?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
-        else {
-            DouyinDebug.log("点「粘贴链接」：没读到剪贴板文本")
-            pasteNote = "没读到剪贴板内容：可能被系统拒绝了粘贴授权（设置 → Music → 从其他 App 粘贴 → 允许），或者剪贴板里不是文字。"
-            return
-        }
-
-        pasteNote = nil
-        if text == input {
-            DouyinDebug.log("点「粘贴链接」：内容和输入框一样，直接提交一次")
-            Task { await submit(text) }
-        } else {
-            DouyinDebug.log("点「粘贴链接」：填入 \(text.count) 个字符")
-            input = text
-        }
     }
 
     /// 粘贴即下载：`.task(id:)` 在输入变化时重跑，天然形成「等粘贴落定」的防抖。
