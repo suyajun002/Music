@@ -1,18 +1,25 @@
-// 用途：资料库（对齐音乐 App 的「歌曲」列表）：封面缩略图、可搜索、可排序、可滑动删除。
+// 用途：资料库主页（对齐音乐 App 的「歌曲」列表）：封面缩略图、可排序、可滑动删除。
 import SwiftUI
 
+enum LibrarySortOrder: String, CaseIterable, Identifiable {
+    case recent = "最近添加"
+    case title = "标题"
+
+    var id: String { rawValue }
+}
+
+private enum LibraryLayout {
+    static let rowContentTop: CGFloat = 12.8
+    static let artworkSize: CGFloat = 52
+}
+
 struct LibraryView: View {
-    enum SortOrder: String, CaseIterable, Identifiable {
-        case recent = "最近添加"
-        case title = "标题"
-
-        var id: String { rawValue }
-    }
-
     @EnvironmentObject private var service: ConversionService
     @EnvironmentObject private var player: MediaPlayer
-    @State private var query = ""
-    @State private var sort: SortOrder = .recent
+    @Binding var showsSettings: Bool
+    @State private var sort: LibrarySortOrder = .recent
+    /// 「转视频」从底部玩偶的菜单直接打开，和「设置」同级。
+    @State private var showsConvert = false
     /// 正在设跳过的那首。非 nil 时弹编辑框。
     @State private var skipEditing: MediaItem?
     /// 编辑框里的起点秒数（文本）。用文本而不是数字：用户可能想打「12」「12.5」，
@@ -23,37 +30,36 @@ struct LibraryView: View {
     /// `IntroSkip` 是 `ObservableObject`，改完这里会自己重画 ——
     /// 不再需要「手动 bump 一个计数器、给列表换 identity」那种会让搜索框被重置的写法。
     @ObservedObject private var introSkip = IntroSkip.shared
+    @StateObject private var beast = ScrollBeastController()
     /// 编辑框里正在试听的那一组的区间，用来画进度、判断按钮该显示「试听」还是「停止」。
     /// **播放本身走 `MediaPlayer`**：它已经有一条完整的链路（AVPlayer、锁屏、灵动岛、
     /// 萌宠），试听要的就是「跟真放一样，只是区间不同」。另开一路 AVPlayer 要多养一套，
     /// 还得处理「两路声音谁说了算」—— 见 `MediaPlayer.preview`。
     @State private var previewing: (from: Double, to: Double)?
-
     private var items: [MediaItem] {
         let base = service.library.items
-        let filtered = query.isEmpty
-            ? base
-            : base.filter { $0.title.localizedCaseInsensitiveContains(query) }
         switch sort {
-        case .recent: return filtered.sorted { $0.savedAt > $1.savedAt }
-        case .title: return filtered.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        case .recent: return base.sorted { $0.savedAt > $1.savedAt }
+        case .title: return base.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         }
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if service.library.items.isEmpty {
-                    ContentUnavailableView(
-                        "资料库是空的",
-                        systemImage: "music.note.list",
-                        description: Text("到「转视频」里贴一条链接下载，或把音频/视频文件放进 App 的「文件」目录，都会自动出现在这里")
-                    )
-                } else {
-                    List {
+        VStack(spacing: 0) {
+                Group {
+                    if service.library.items.isEmpty {
+                        ContentUnavailableView(
+                            "资料库是空的",
+                            systemImage: "music.note.list",
+                            description: Text("点底部玩偶打开「转视频」贴一条链接下载，或把音频/视频文件放进 App 的「文件」目录，都会自动出现在这里")
+                        )
+                    } else {
+                        List {
                         Section {
                             ForEach(items) { item in
                                 row(item)
+                                    // 首屏 10 首。底部控制条占 52pt，行高保持约 78pt。
+                                    .listRowInsets(EdgeInsets(top: LibraryLayout.rowContentTop, leading: 16, bottom: LibraryLayout.rowContentTop, trailing: 16))
                                     // 左滑：跳过前奏 + 删除。用 `swipeActions` 而不是原来的
                                     // `.onDelete` —— `.onDelete` 只能出「删除」一个动作，
                                     // 加不了第二项。
@@ -78,26 +84,55 @@ struct LibraryView: View {
                         } footer: {
                             Text("\(service.library.items.count) 首 · 共 \(totalText)")
                         }
-                    }
-                    .searchable(text: $query, prompt: "搜索标题")
-                }
-            }
-            .navigationTitle("资料库")
-            .toolbar {
-                if !service.library.items.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            Picker("排序方式", selection: $sort) {
-                                ForEach(SortOrder.allCases) { order in
-                                    Text(order.rawValue).tag(order)
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "arrow.up.arrow.down")
+                        .listRowBackground(Color.clear)
+                        }
+                        // 歌单容器铺满屏幕宽度：不做 iOS 26 inset-grouped 的圆角卡片，列表直接内嵌在页面里。
+                        .listStyle(.plain)
+                        // 去掉 List 默认的内容上边距；顶部只留安全区，也就是灵动岛本身的距离。
+                        .contentMargins(.top, -20, for: .scrollContent)
+                        .listSectionSpacing(0)
+                        .scrollContentBackground(.hidden)
+                        .background {
+                            TopBackdrop()
+                                .ignoresSafeArea()
+                        }
+                        // 首屏只露 10 首。列表滚到可视区底部时，第 11 行的封面顶边会露出
+                        // 一条；用同色遮罩切掉，不改变前 10 行的行高。
+                        .overlay(alignment: .bottom) {
+                            TopBackdrop.bottomColor
+                                .frame(height: 10)
+                                .allowsHitTesting(false)
+                        }
+                        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                            geometry.contentOffset.y
+                        } action: { _, offset in
+                            beast.consume(offset: offset)
                         }
                     }
                 }
             }
+            .background {
+                TopBackdrop()
+                    .ignoresSafeArea()
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                beastControls
+                    .frame(height: ScrollBeastView.barHeight)
+                    .background {
+                        TopBackdrop.bottomColor
+                            .ignoresSafeArea(edges: .bottom)
+                    }
+            }
+#if DEBUG
+            .task {
+                guard let demo = ProcessInfo.processInfo.environment["D2M_BEAST_DEMO"] else { return }
+                let action: ScrollBeastAction = demo == "spit" ? .spit : .swallow
+                while !Task.isCancelled {
+                    beast.runDemo(action)
+                    try? await Task.sleep(for: .milliseconds(350))
+                }
+            }
+#endif
             // 左滑「跳过前奏」弹的编辑框。用 `sheet(item:)` 而不是 `.alert`：
             // alert 里塞 TextField 是能塞，但布局被系统框死、也放不下「试听一下」这类按钮。
             .sheet(item: $skipEditing) { item in
@@ -112,7 +147,35 @@ struct LibraryView: View {
                         previewing = nil
                     }
             }
+            .sheet(isPresented: $showsConvert) {
+                NavigationStack {
+                    ConvertView()
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("完成") { showsConvert = false }
+                            }
+                        }
+                }
+                .environmentObject(service)
+                .environmentObject(player)
         }
+    }
+
+    private var beastControls: some View {
+        ScrollBeastView(
+            controller: beast,
+            sort: $sort,
+            canSort: !service.library.items.isEmpty,
+            canPrevious: player.currentID != nil,
+            canNext: player.hasNext,
+            onPrevious: { player.previous() },
+            onNext: { player.next() },
+            onTogglePlayback: { player.toggle() },
+            onSettings: { showsSettings = true },
+            onShuffle: { player.setMode(.shuffle) },
+            onSequence: { player.setMode(.sequence) },
+            onConvert: { showsConvert = true }
+        )
     }
 
     // MARK: - 跳过开头 / 结尾
@@ -357,7 +420,11 @@ struct LibraryView: View {
             service.play(item)
         } label: {
             HStack(spacing: 12) {
-                ArtworkView(url: service.library.artworkURL(for: item), size: 52, corner: 5)
+                ArtworkView(
+                    url: service.library.artworkURL(for: item),
+                    size: LibraryLayout.artworkSize,
+                    corner: 5
+                )
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title)
@@ -386,7 +453,6 @@ struct LibraryView: View {
                 if isCurrent(item), player.isPlaying {
                     Image(systemName: "waveform")
                         .foregroundStyle(.tint)
-                        .symbolEffect(.variableColor.iterative, options: .repeating)
                 }
             }
         }
@@ -403,4 +469,5 @@ struct LibraryView: View {
             ? String(format: "%.2f GB", Double(bytes) / 1024 / 1024 / 1024)
             : String(format: "%.0f MB", Double(bytes) / 1024 / 1024)
     }
+
 }

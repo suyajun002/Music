@@ -67,7 +67,7 @@ final class ConversionService: ObservableObject {
     /// 剪贴板里识别到、等用户确认的链接。非空时界面弹确认框。
     @Published private(set) var clipboardPrompt: ClipboardPrompt?
 
-    /// 用户确认过剪贴板链接后的结论（「转视频」页签那行提示用）。
+    /// 用户确认过剪贴板链接后的结论（转视频页那行提示用）。
     @Published private(set) var clipboardOutcome: SubmitOutcome?
 
     /// 并行下载数：用户可调并持久化，改完立刻重新调度。
@@ -86,6 +86,8 @@ final class ConversionService: ObservableObject {
     private let douyin = DouyinExtractor()
     private let youtube = YouTubeExtractor()
     private var gate = ConcurrencyGate()
+    /// 本次启动已经尝试补过封面的条目，避免同一首在一次会话里反复打网络。
+    private var artworkBackfillAttempted = Set<String>()
 
     /// 有没有配 Apify token。界面靠它决定「要不要提示先去设置里填一个」——
     /// 不把 token 本身发布出去，视图没有任何理由拿到那个值。
@@ -135,12 +137,53 @@ final class ConversionService: ObservableObject {
     var activeCount: Int { jobs.filter { $0.state.isActive }.count }
     var runningCount: Int { gate.running }
     var waitingCount: Int { gate.waitingCount }
+    var completedCount: Int { jobs.filter { $0.state == .ready }.count }
+    var failedCount: Int { jobs.filter { $0.state == .failed }.count }
 
     /// 收录外部放进 Documents 的媒体文件（「文件」App 拖入、或 Mac 用 devicectl 推入）。
     /// 只登记本地文件，不联网、不下载。
     func adoptExternalMedia() async {
         let adopted = await library.adoptExternalFiles()
         if adopted > 0 { DouyinDebug.log("资料库收录外部文件 \(adopted) 个") }
+    }
+
+    /// 给老 YouTube 条目补封面。之前入库只读 mp3 内嵌图，而 actor 的 mp3 没有内嵌图，
+    /// 所以那一批全是占位图；这里用视频 ID 去取公开缩略图。
+    ///
+    /// 串行补、连续失败三次就停：网络不通时不要在后台把 36 首各等一轮超时。
+    func backfillArtworkIfNeeded() async {
+        let missing = library.items.filter {
+            $0.artworkFileName == nil
+                && !artworkBackfillAttempted.contains($0.id)
+                && isYouTube($0)
+        }
+        guard !missing.isEmpty else { return }
+        DouyinDebug.log("补封面：\(missing.count) 首 YouTube 缺封面")
+
+        var consecutiveFailures = 0
+        var fixed = 0
+        for item in missing {
+            artworkBackfillAttempted.insert(item.id)
+            guard let data = await youtube.artworkData(forVideoID: item.id) else {
+                consecutiveFailures += 1
+                if consecutiveFailures >= 3 {
+                    DouyinDebug.log("补封面：连续 3 首失败，先停下")
+                    break
+                }
+                continue
+            }
+            consecutiveFailures = 0
+            if library.setArtwork(data, for: item.id) {
+                fixed += 1
+                if player.currentID == item.id { player.refreshArtwork() }
+            }
+        }
+        if fixed > 0 { DouyinDebug.log("补封面完成：\(fixed) 首") }
+    }
+
+    private func isYouTube(_ item: MediaItem) -> Bool {
+        guard let raw = item.sourceURL, let url = URL(string: raw) else { return false }
+        return MediaSource.of(url) == .youtube
     }
 
     // MARK: - 剪贴板
@@ -355,8 +398,29 @@ final class ConversionService: ObservableObject {
         jobs.removeAll { $0.id == jobID }
     }
 
-    func clearFinished() {
-        jobs.removeAll { !$0.state.isActive }
+    /// 只清成功记录。失败记录留着 —— 它是一句话原因，用户可能还要看或重试。
+    func clearCompleted() {
+        jobs.removeAll { $0.state == .ready }
+    }
+
+    /// 只清失败记录。和「清除已完成」分开，避免用户点一个按钮却顺手丢掉失败原因。
+    func clearFailed() {
+        jobs.removeAll { $0.state == .failed }
+    }
+
+    /// 原地重试一条失败任务：不另生成记录，也不绕过并发闸门。
+    func retry(jobID: String) {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }),
+              jobs[index].state == .failed else { return }
+        jobs[index].state = .queued
+        jobs[index].stage = "排队中"
+        jobs[index].progress = 0
+        jobs[index].progressUnknown = false
+        jobs[index].downloadedBytes = 0
+        jobs[index].attempt = nil
+        jobs[index].error = nil
+        gate.enqueue(jobID)
+        pump()
     }
 
     /// 从资料库点某一首：以整库为队列，从这首开始播。
@@ -429,7 +493,8 @@ final class ConversionService: ObservableObject {
                     videoID: result.videoID,
                     title: result.title,
                     fileName: fileName,
-                    sourceURL: url.absoluteString
+                    sourceURL: url.absoluteString,
+                    artworkData: result.artworkData
                 )
             }
 
@@ -448,7 +513,8 @@ final class ConversionService: ObservableObject {
             }
         } catch {
             try? FileManager.default.removeItem(at: destination)
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            let message = userFacingMessage(for: error)
+            DouyinDebug.log("任务失败：\(message)")
             update(jobID) { job in
                 job.state = .failed
                 job.stage = "失败"
@@ -456,6 +522,28 @@ final class ConversionService: ObservableObject {
                 job.error = message
             }
         }
+    }
+
+    /// 系统错误默认是英文（真机上常见的 `The request timed out.`），
+    /// 页面只该给用户一句能行动的中文原因；原始 code 留给日志。
+    private func userFacingMessage(for error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut: return "请求超时，请重试"
+            case .networkConnectionLost: return "网络连接中断，请重试"
+            case .notConnectedToInternet: return "没有网络连接，请检查后重试"
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                return "网络连不上，请检查后重试"
+            case .cancelled: return "已取消"
+            default: return "网络错误（\(urlError.code.rawValue)），请重试"
+            }
+        }
+        if let localized = error as? LocalizedError,
+           let message = localized.errorDescription,
+           !message.isEmpty {
+            return message
+        }
+        return error.localizedDescription
     }
 
     /// 按来源挑取流实现。新增来源时只在这里加一个 case。

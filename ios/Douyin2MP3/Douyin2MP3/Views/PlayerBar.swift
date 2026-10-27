@@ -1,4 +1,4 @@
-// 用途：迷你播放条（音乐 App 样式），固定在页签栏上方，点一下进全屏播放页。
+// 用途：迷你播放条（音乐 App 样式），固定在底部安全区上方，点一下进全屏播放页。
 import SwiftUI
 
 struct PlayerBar: View {
@@ -47,13 +47,13 @@ struct PlayerBar: View {
                 .contentShape(Rectangle())
                 .onTapGesture { player.isExpanded = true }
             }
-            .background(.bar)
+            .background(TopBackdrop.bottomColor)
         }
     }
 }
 
 extension View {
-    /// 把迷你播放条钉在页签栏上方；无播放内容时不占高度。
+    /// 把迷你播放条钉在底部安全区上方；无播放内容时不占高度。
     func miniPlayerInset() -> some View {
         safeAreaInset(edge: .bottom) { PlayerBar() }
     }

@@ -148,6 +148,13 @@ final class MediaPlayer: ObservableObject {
         artworkLoader = artwork
     }
 
+    /// 封面是后补的（YouTube 老条目从缩略图补）时，让正在播放的锁屏/迷你条立刻刷新。
+    func refreshArtwork() {
+        guard let item = currentItem else { return }
+        artwork = artworkLoader(item).flatMap { UIImage(contentsOfFile: $0.path) }
+        updateNowPlaying()
+    }
+
     /// 从资料库点某一首进来（以及冷启动续播）：这一首听过一半的话，接着上次的地方放。
     func play(items: [MediaItem], startIndex: Int) {
         queue = items

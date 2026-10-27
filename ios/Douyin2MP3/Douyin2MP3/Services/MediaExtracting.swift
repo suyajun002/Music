@@ -22,6 +22,15 @@ struct ExtractedMedia {
     let videoID: String
     /// 分享文案里的标题；取不到就交给 `MediaLibrary` 回落文件元数据/文件名。
     let title: String?
+    /// 取流时顺带拿到的封面（目前只有 YouTube actor 会给缩略图）。
+    /// 抖音没有这一项，入库时仍按视频首帧抽。
+    let artworkData: Data?
+
+    init(videoID: String, title: String?, artworkData: Data? = nil) {
+        self.videoID = videoID
+        self.title = title
+        self.artworkData = artworkData
+    }
 }
 
 /// 取流进度。`fraction` 为 nil 表示服务器没给总大小（CDN 走 chunked），

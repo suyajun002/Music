@@ -31,7 +31,7 @@ struct Job: Identifiable, Equatable {
 
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
-        return "未命名音频"
+        return source == .youtube ? "YouTube 音频" : "抖音视频"
     }
 
     var sizeText: String {

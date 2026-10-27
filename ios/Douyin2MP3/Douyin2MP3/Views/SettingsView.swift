@@ -1,10 +1,19 @@
-// 用途：唯一的设置面板。从「转视频」右上角齿轮进，也从中途弹出的确认框进。
-// 现在装两件事：Apify token（YouTube 取流要用）和同时下载数。
+// 用途：唯一的设置面板。从底部玩偶的菜单进，也从中途弹出的确认框进。
+// 装两件事：Apify token（YouTube 取流要用）和同时下载数。
 import SwiftUI
+
+enum SettingsRoute: Hashable {
+    case convert
+}
 
 struct SettingsView: View {
     @EnvironmentObject private var service: ConversionService
     @Environment(\.dismiss) private var dismiss
+    @State private var path: [SettingsRoute]
+
+    init(initialRoute: SettingsRoute? = nil) {
+        _path = State(initialValue: initialRoute.map { [$0] } ?? [])
+    }
 
     /// 输入框里的新 token。**不回填已保存的那份**：没必要让密钥进视图状态，
     /// 而且这一栏的语义本来就清楚 —— 「填了就覆盖，留空不动」。
@@ -19,7 +28,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 youtubeSection
                 downloadSection
@@ -29,6 +38,12 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
+                }
+            }
+            .navigationDestination(for: SettingsRoute.self) { route in
+                switch route {
+                case .convert:
+                    ConvertView()
                 }
             }
         }

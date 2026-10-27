@@ -49,6 +49,70 @@ struct ArtworkView: View {
     }
 }
 
+/// 转换记录的封面：下好的用真实封面，还没下好的用来源色块占位。
+/// 和 `ArtworkView` 分开，是因为占位色/图标属于「任务来源」，不是媒体封面本身。
+struct JobArtworkView: View {
+    let source: MediaSource
+    let state: JobState
+    var artworkURL: URL?
+    var size: CGFloat = 52
+    var corner: CGFloat = 5
+
+    var body: some View {
+        Group {
+            if let image = ArtworkCache.image(at: artworkURL) {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                placeholder
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: corner, style: .continuous)
+                .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+        }
+    }
+
+    private var placeholder: some View {
+        ZStack(alignment: .bottomTrailing) {
+            LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay {
+                    Image(systemName: sourceIcon)
+                        .font(.system(size: size * 0.34, weight: .semibold))
+                        .foregroundStyle(.white.opacity(state == .failed ? 0.55 : 0.92))
+                }
+                .saturation(state == .failed ? 0.35 : 1)
+
+            if state == .failed {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .font(.system(size: size * 0.25, weight: .semibold))
+                    .foregroundStyle(.white, .red)
+                    .padding(3)
+            }
+        }
+    }
+
+    private var sourceIcon: String {
+        switch source {
+        case .douyin: return "music.note"
+        case .youtube: return "play.fill"
+        }
+    }
+
+    private var colors: [Color] {
+        switch source {
+        case .douyin:
+            return [Color(red: 0.24, green: 0.17, blue: 0.25), Color(red: 0.06, green: 0.06, blue: 0.08)]
+        case .youtube:
+            return [Color(red: 0.80, green: 0.14, blue: 0.18), Color(red: 0.34, green: 0.03, blue: 0.06)]
+        }
+    }
+}
+
 /// 系统音量条（顺带带出 AirPlay 路由按钮），和音乐 App 一致。
 struct SystemVolumeView: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {

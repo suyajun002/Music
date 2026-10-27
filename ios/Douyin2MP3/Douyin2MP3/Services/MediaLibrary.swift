@@ -53,10 +53,21 @@ final class MediaLibrary: ObservableObject {
 
     /// 入库：按类型取封面（视频抽首帧、音频读内嵌图），读时长，写索引。
     /// 标题优先用显式传入的（抖音取流结果），其次文件自身元数据，最后退回文件名。
-    func register(videoID: String, title: String?, fileName: String, sourceURL: String?) async {
+    func register(
+        videoID: String,
+        title: String?,
+        fileName: String,
+        sourceURL: String?,
+        artworkData: Data? = nil
+    ) async {
         if contains(videoID: videoID) { return }
         let url = directory.appendingPathComponent(fileName)
-        let artworkName = await Self.makeArtwork(from: url, directory: directory, id: videoID)
+        let artworkName = await Self.makeArtwork(
+            from: url,
+            provided: artworkData,
+            directory: directory,
+            id: videoID
+        )
         let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? Int
 
         let item = MediaItem(
@@ -73,6 +84,23 @@ final class MediaLibrary: ObservableObject {
         // 又下回来了：这条链接的「下过又删了」记录就没用了，留着反而会让下次贴它被多挡一次
         forgetDeletedLinks(matching: sourceURL)
         persist()
+    }
+
+    /// 后补封面（YouTube 老条目启动时从缩略图补）。只补空封面，不覆盖已有的。
+    @discardableResult
+    func setArtwork(_ data: Data, for videoID: String) -> Bool {
+        guard let index = items.firstIndex(where: { $0.id == videoID }),
+              items[index].artworkFileName == nil,
+              let image = UIImage(data: data),
+              let jpeg = image.jpegData(compressionQuality: 0.9),
+              let name = Self.writeJPEG(jpeg, directory: directory, id: videoID)
+        else { return false }
+
+        var item = items[index]
+        item.artworkFileName = name
+        items[index] = item
+        persist()
+        return true
     }
 
     // MARK: - 外部文件收录
@@ -226,7 +254,19 @@ final class MediaLibrary: ObservableObject {
 
     /// 封面（音乐 App 的专辑图位置）：视频抽第 1 秒画面，音频读内嵌专辑图。
     /// 都没有则返回 nil，界面用占位图，不阻塞入库。
-    private static func makeArtwork(from videoURL: URL, directory: URL, id: String) async -> String? {
+    private static func makeArtwork(
+        from videoURL: URL,
+        provided: Data?,
+        directory: URL,
+        id: String
+    ) async -> String? {
+        // 取流层已经带回来的封面优先：YouTube 的 mp3 没有内嵌图，靠这一步才有封面。
+        if let provided,
+           let image = UIImage(data: provided),
+           let data = image.jpegData(compressionQuality: 0.9) {
+            return writeJPEG(data, directory: directory, id: id)
+        }
+
         let cgImage: CGImage?
         if MediaKind(fileName: videoURL.lastPathComponent).hasPicture {
             let asset = AVURLAsset(url: videoURL)
@@ -241,9 +281,17 @@ final class MediaLibrary: ObservableObject {
         guard let cgImage, let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.9) else {
             return nil
         }
+        return writeJPEG(data, directory: directory, id: id)
+    }
 
+    /// 封面文件名固定用条目 id，写盘失败就返回 nil、不阻塞入库。
+    private static func writeJPEG(_ data: Data, directory: URL, id: String) -> String? {
         let name = "\(id.replacingOccurrences(of: "/", with: "_")).jpg"
-        try? data.write(to: directory.appendingPathComponent(name), options: .atomic)
+        do {
+            try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+        } catch {
+            return nil
+        }
         return name
     }
 

@@ -29,7 +29,7 @@ struct ClipboardConfirmView: View {
 
     var body: some View {
         ZStack {
-            // 蒙层：挡住底下的页签交互，避免倒计时期间误触到别的按钮
+            // 蒙层：挡住底下页面的交互，避免倒计时期间误触到别的按钮
             Color.black.opacity(0.35)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
@@ -179,7 +179,7 @@ struct ClipboardConfirmView: View {
             if status.deleted > 0 { parts.append("\(status.deleted) 条下过又删了") }
             var text = "\(parts.joined(separator: "，"))，不会重复下载"
             // 删过的那批要给他一条出路：两个字段都不提的话，用户只会觉得这条链接再也下不了了
-            if status.deleted > 0 { text += "（要重下去「转视频」页点一下）" }
+            if status.deleted > 0 { text += "（要重下去「设置 → 转视频」点一下）" }
             return text
         case .counting:
             var text = "\(remaining) 秒后自动下载"
@@ -206,7 +206,7 @@ struct ClipboardConfirmView: View {
             if status.deleted > 0 { parts.append("\(status.deleted) 条下过又删了") }
             lines.append("\(parts.joined(separator: "，"))，会自动跳过，不会重复下载。")
             if status.deleted > 0 {
-                lines.append("下过又删了的那几条不会自动重下（YouTube 一条就要一次钱），要重下去「转视频」页点「重新下载」。")
+                lines.append("下过又删了的那几条不会自动重下（YouTube 一条就要一次钱），要重下去「设置 → 转视频」点「重新下载」。")
             }
             if !status.nothingNew {
                 lines.append("这次实际新下 \(status.total - status.skipped) 条。")

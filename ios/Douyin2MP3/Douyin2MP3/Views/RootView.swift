@@ -1,4 +1,4 @@
-// 用途：根视图。资料库（音乐 App 形态）+ 转视频两个页签，迷你播放条常驻，进后台摘画面保证声音继续。
+// 用途：根视图。直接进资料库（音乐 App 形态），播放控制收进顶部玩偶；进后台摘画面保证声音继续。
 import SwiftUI
 
 struct RootView: View {
@@ -6,12 +6,13 @@ struct RootView: View {
     @EnvironmentObject private var player: MediaPlayer
     @Environment(\.scenePhase) private var scenePhase
 
-    /// 设置面板挂在根上：它有两个入口（「转视频」的齿轮、确认框里的「去设置」），
-    /// 挂在根上就不用两边各持一份 sheet。
+    /// 设置面板挂在根上：资料库齿轮和确认框里的「去设置」都开同一个。
     @State private var showsSettings = false
+    /// 仅用于命令行截图：直接打开「设置 → 转视频」。
+    @State private var settingsInitialRoute: SettingsRoute?
 
     var body: some View {
-        tabs
+        LibraryView(showsSettings: $showsSettings)
         .sheet(isPresented: Binding(
             get: { player.isExpanded },
             set: { player.isExpanded = $0 }
@@ -19,8 +20,10 @@ struct RootView: View {
             PlayerView().environmentObject(service)
                 .environmentObject(player)
         }
-        .sheet(isPresented: $showsSettings) {
-            SettingsView().environmentObject(service)
+        .sheet(isPresented: $showsSettings, onDismiss: { settingsInitialRoute = nil }) {
+            SettingsView(initialRoute: settingsInitialRoute)
+                .environmentObject(service)
+                .environmentObject(player)
         }
         .overlay { clipboardConfirm }
         .onChange(of: scenePhase) { _, phase in
@@ -31,7 +34,9 @@ struct RootView: View {
                 Task { await service.adoptExternalMedia() }
                 // 从抖音复制完链接切回来，正是「识别剪贴板」最自然的时机。
                 // 剪贴板没换过内容就不会读、也不会弹系统授权框（见 ClipboardReader）。
-                Task { await service.checkClipboard() }
+                if !clipboardCheckDisabled {
+                    Task { await service.checkClipboard() }
+                }
             case .background:
                 // 摘掉视频图层，改为纯音频播放，避免被系统挂起
                 player.showsVideo = false
@@ -46,15 +51,36 @@ struct RootView: View {
         // 只在这里调（`.task` 一个视图生命周期只跑一次 = 冷启动）；切回前台不续播，
         // 否则暂停着切走再回来会被强行放起来，正在放的那首也会被打断。
         .task {
+            let startScreen = ProcessInfo.processInfo.environment["D2M_START_SCREEN"]
+            if startScreen == "settings" || startScreen == "convert" {
+                settingsInitialRoute = startScreen == "convert" ? .convert : nil
+                showsSettings = true
+            }
             await service.adoptExternalMedia()
             player.resumeLastPlayback(from: service.library.items)
+            // 老 YouTube 条目没有内嵌封面：后台补，不挡续播。
+            Task { await service.backfillArtworkIfNeeded() }
             await player.runJumpDemoIfRequested()
             await player.runModeDemoIfRequested()
             await player.runPreviewDemoIfRequested()
             await service.submitDemoLinkIfRequested()
         }
-        // 启动时识别一次剪贴板：确认框挂在这里，用户停在哪个页签都能看到。
-        .task { await service.checkClipboard() }
+        // 启动时识别一次剪贴板：确认框挂在根上，设置页之外也能看到。
+        .task {
+            if !clipboardCheckDisabled {
+                await service.checkClipboard()
+            }
+        }
+    }
+
+    /// 真机截图/自动化时跳过剪贴板读取，避免 iOS 的“粘贴自…”系统框挡住页面。
+    /// 只在 Debug 包生效，正常运行仍然会识别剪贴板里的链接。
+    private var clipboardCheckDisabled: Bool {
+#if DEBUG
+        ProcessInfo.processInfo.environment["D2M_SKIP_CLIPBOARD"] == "1"
+#else
+        false
+#endif
     }
 
     /// 剪贴板确认框：挂成 overlay 而不是 `.alert`——
@@ -74,6 +100,7 @@ struct RootView: View {
                 // 「去设置」：先收起这个框，再开设置面板 —— 两个 sheet/overlay 叠着会打架
                 onFix: {
                     service.dismissClipboardPrompt()
+                    settingsInitialRoute = nil
                     showsSettings = true
                 }
             )
@@ -87,28 +114,6 @@ struct RootView: View {
     /// 5 秒后自动失败一次，用户还得自己猜到是缺 token。改成当场说明白、把人送去填。
     private func blockedReason(for prompt: ClipboardPrompt) -> String? {
         guard prompt.isPaid, !service.hasApifyToken else { return nil }
-        return "这批里有 YouTube 链接，还没填 Apify token —— 去「转视频」右上角设置里填一次。"
-    }
-
-    /// 有下载在跑时在「转视频」页签上挂个角标：
-    /// 从别的页签看到「有东西在下载」，不用去猜刚才那个确认框干了什么。
-    /// 用 `Text?` 而不是 `Int?`——`.badge` 没有接 `Int?` 的重载，`nil` 才会真正不显示角标。
-    private var downloadBadge: Text? {
-        service.activeCount > 0 ? Text("\(service.activeCount)") : nil
-    }
-
-    /// 迷你播放条挂在「每个页面的底部安全区」里：
-    /// 位置正好在页签栏上方（不会盖住页签栏），没有播放内容时高度自动塌成 0。
-    /// 注意不要用 tabViewBottomAccessory——即使内容为空，它也会留一条空白槽。
-    private var tabs: some View {
-        TabView {
-            Tab("资料库", systemImage: "music.note.list") {
-                LibraryView().miniPlayerInset()
-            }
-            Tab("转视频", systemImage: "arrow.down.circle") {
-                ConvertView(showsSettings: $showsSettings).miniPlayerInset()
-            }
-            .badge(downloadBadge)
-        }
+        return "这批里有 YouTube 链接，还没填 Apify token —— 去右上角设置里填一次。"
     }
 }

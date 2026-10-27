@@ -18,7 +18,7 @@ enum YouTubeError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingToken: return "还没填 Apify token：转视频页右上角设置里填一次"
+        case .missingToken: return "还没填 Apify token：右上角设置里填一次"
         case .videoID: return "链接里没认出 YouTube 视频 ID"
         case .submitFailed(let detail): return "提交 Apify 任务失败：\(detail)"
         case .runFailed(let detail): return "Apify 任务失败：\(detail)"
@@ -126,11 +126,78 @@ actor YouTubeExtractor: MediaExtracting {
             ))
         }
 
+        // actor 的结果里带缩略图；顺手取下来交给入库层写封面。
+        // 取不到不影响下载成功，界面继续用来源色块占位。
+        onStage("获取封面", .at(0.96))
+        let artwork = await artworkData(for: item, videoID: videoID, token: token)
+        if artwork == nil {
+            DouyinDebug.log("YouTube \(videoID) 封面获取失败，入库用占位图")
+        }
+
         onStage("保存到手机", .at(0.98))
-        return ExtractedMedia(videoID: videoID, title: item.title)
+        return ExtractedMedia(videoID: videoID, title: item.title, artworkData: artwork)
     }
 
     private static let waitStage = "等 Apify 取音频"
+
+    // MARK: - 封面
+
+    /// 给已有资料库条目补封面：用公开的 YouTube 缩略图，不需要 token。
+    /// `sddefault` 是 640×480；个别老视频没有这一档，再退 `hqdefault`。
+    func artworkData(forVideoID videoID: String) async -> Data? {
+        guard videoID.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
+            return nil
+        }
+        let candidates = [
+            "https://i.ytimg.com/vi/\(videoID)/sddefault.jpg",
+            "https://i.ytimg.com/vi/\(videoID)/hqdefault.jpg",
+        ]
+        for raw in candidates {
+            guard let url = URL(string: raw) else { continue }
+            if let data = try? await fetchImage(url, token: nil) { return data }
+        }
+        DouyinDebug.log("YouTube \(videoID) 公开缩略图也没有取到")
+        return nil
+    }
+
+    /// 优先 actor 给的公开缩略图；它要凭证时再带 token 取 Apify 那档。
+    /// 两条都失败再退回标准的 YouTube 缩略图地址，保证老 actor 结果也能有封面。
+    private func artworkData(for item: ResultItem, videoID: String, token: String) async -> Data? {
+        var candidates: [(url: URL, token: String?)] = []
+        if let url = item.thumbnailYoutubeURL { candidates.append((url, nil)) }
+        if let url = item.thumbnailFileURL { candidates.append((url, token)) }
+        if let url = URL(string: "https://i.ytimg.com/vi/\(videoID)/sddefault.jpg") {
+            candidates.append((url, nil))
+        }
+        for candidate in candidates {
+            if let data = try? await fetchImage(candidate.url, token: candidate.token) {
+                return data
+            }
+        }
+        return nil
+    }
+
+    private func fetchImage(_ url: URL, token: String?) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        if let token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await session.data(for: request)
+        try Self.check(response)
+        guard Self.looksLikeImage(data) else {
+            throw YouTubeError.downloadRejected("封面不是图片")
+        }
+        return data
+    }
+
+    /// 纯函数，命令行也能直接测。只认 JPEG/PNG 头，避免把 HTML 错误页当封面存下来。
+    static func looksLikeImage(_ data: Data) -> Bool {
+        let bytes = [UInt8](data.prefix(8))
+        if bytes.count >= 3, bytes[0] == 0xFF, bytes[1] == 0xD8, bytes[2] == 0xFF { return true }
+        if bytes.count >= 4, bytes[0] == 0x89, bytes[1] == 0x50, bytes[2] == 0x4E, bytes[3] == 0x47 { return true }
+        return false
+    }
 
     // MARK: - 设置页的「验证」
 
@@ -220,12 +287,16 @@ actor YouTubeExtractor: MediaExtracting {
     struct ResultItem {
         var title: String?
         var audioFileURL: URL?
+        var thumbnailFileURL: URL?
+        var thumbnailYoutubeURL: URL?
         /// 失败原因：actor 的 `status` 或 `error`，都没有就是 nil。
         var status: String?
 
         init(json: [String: Any]) {
             title = json["title"] as? String
-            audioFileURL = ResultItem.audioURL(json["audioFileUrl"] as? String)
+            audioFileURL = ResultItem.httpURL(json["audioFileUrl"] as? String)
+            thumbnailFileURL = ResultItem.httpURL(json["thumbnailFileUrl"] as? String)
+            thumbnailYoutubeURL = ResultItem.httpURL(json["thumbnailYoutubeUrl"] as? String)
             let status = json["status"] as? String
             let error = json["error"] as? String
             self.status = status ?? error
@@ -233,7 +304,7 @@ actor YouTubeExtractor: MediaExtracting {
 
         /// 只认 http(s) 的绝对地址。`URL(string:)` 很宽容，空白串会变成一个相对 URL，
         /// 拿到下载器里只会报一句看不懂的错——不如在这里就当没给。
-        static func audioURL(_ raw: String?) -> URL? {
+        static func httpURL(_ raw: String?) -> URL? {
             guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !trimmed.isEmpty,
                   let url = URL(string: trimmed),
