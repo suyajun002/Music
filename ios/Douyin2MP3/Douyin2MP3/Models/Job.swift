@@ -7,7 +7,7 @@ enum JobState: String, Codable {
     var isActive: Bool { self == .queued || self == .running }
 }
 
-struct Job: Identifiable, Equatable {
+struct Job: Identifiable, Equatable, Codable {
     let id: String
     /// 这条链接是抖音还是 YouTube。定下扩展名（mp4/mp3）、决定谁来取流，
     /// 也是界面上「这条走的是哪条链路」的唯一依据。
@@ -21,6 +21,8 @@ struct Job: Identifiable, Equatable {
     var downloadedBytes: Int64 = 0
     /// 正在尝试的「清晰度·线路」，让用户看到换线路重试的过程。
     var attempt: String?
+    /// 是否已经用过启动时的自动重试。只自动试一次，避免每次启动都重复下载/重复扣费。
+    var autoRetried = false
     var title: String?
     var videoID: String?
     var fileName: String?

@@ -2,7 +2,7 @@
 // 粘贴框和剪贴板那条路都是自动路由。
 import Foundation
 
-enum MediaSource: String, CaseIterable {
+enum MediaSource: String, CaseIterable, Codable {
     case douyin
     case youtube
 

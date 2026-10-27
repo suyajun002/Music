@@ -86,6 +86,7 @@ final class ConversionService: ObservableObject {
     private let douyin = DouyinExtractor()
     private let youtube = YouTubeExtractor()
     private var gate = ConcurrencyGate()
+    private let history = ConversionHistoryStore()
     /// 本次启动已经尝试补过封面的条目，避免同一首在一次会话里反复打网络。
     private var artworkBackfillAttempted = Set<String>()
 
@@ -114,6 +115,7 @@ final class ConversionService: ObservableObject {
         // init 里赋值不会触发 didSet，所以闸门上限要显式对齐一次。
         self.maxConcurrent = initial
         self.gate.limit = initial
+        restoreHistory()
     }
 
     /// 换 Apify token。存钥匙串、立刻生效，不用重启 —— 取流那边每次调用现读。
@@ -350,6 +352,7 @@ final class ConversionService: ObservableObject {
             outcome.queued += 1
         }
 
+        persistJobs()
         pump()
         return outcome
     }
@@ -396,16 +399,19 @@ final class ConversionService: ObservableObject {
     func remove(jobID: String) {
         gate.cancel(jobID)
         jobs.removeAll { $0.id == jobID }
+        persistJobs()
     }
 
     /// 只清成功记录。失败记录留着 —— 它是一句话原因，用户可能还要看或重试。
     func clearCompleted() {
         jobs.removeAll { $0.state == .ready }
+        persistJobs()
     }
 
     /// 只清失败记录。和「清除已完成」分开，避免用户点一个按钮却顺手丢掉失败原因。
     func clearFailed() {
         jobs.removeAll { $0.state == .failed }
+        persistJobs()
     }
 
     /// 原地重试一条失败任务：不另生成记录，也不绕过并发闸门。
@@ -420,6 +426,7 @@ final class ConversionService: ObservableObject {
         jobs[index].attempt = nil
         jobs[index].error = nil
         gate.enqueue(jobID)
+        persistJobs()
         pump()
     }
 
@@ -450,12 +457,22 @@ final class ConversionService: ObservableObject {
     }
 
     private func process(_ jobID: String) async {
-        guard
-            let index = jobs.firstIndex(where: { $0.id == jobID }),
-            let fileName = jobs[index].fileName,
-            let url = URL(string: jobs[index].sourceURL)
-        else { return }
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        guard let url = URL(string: jobs[index].sourceURL) else {
+            update(jobID) { job in
+                job.state = .failed
+                job.stage = "失败"
+                job.error = "任务数据不完整，请重新粘贴链接"
+            }
+            persistJobs()
+            return
+        }
+        let fileName = jobs[index].fileName ?? "\(jobID).\(jobs[index].source.fileExtension)"
         let source = jobs[index].source
+
+        if jobs[index].fileName == nil {
+            update(jobID) { $0.fileName = fileName }
+        }
 
         update(jobID) { job in
             job.state = .running
@@ -465,6 +482,7 @@ final class ConversionService: ObservableObject {
             job.downloadedBytes = 0
             job.attempt = nil
         }
+        persistJobs()
 
         let destination = library.destination(for: jobID, source: source)
         do {
@@ -511,6 +529,7 @@ final class ConversionService: ObservableObject {
                 job.durationSec = item?.durationSec
                 job.error = nil
             }
+            persistJobs()
         } catch {
             try? FileManager.default.removeItem(at: destination)
             let message = userFacingMessage(for: error)
@@ -521,7 +540,32 @@ final class ConversionService: ObservableObject {
                 job.attempt = nil
                 job.error = message
             }
+            persistJobs()
         }
+    }
+
+    private func restoreHistory() {
+        let loaded = history.load()
+        guard !loaded.isEmpty else { return }
+        let autoRetryIDs = ConversionHistoryStore.interruptedJobsToAutoRetry(loaded)
+        let autoRetrySet = Set(autoRetryIDs)
+        var restored = ConversionHistoryStore.restoredForLaunch(loaded)
+        for index in restored.indices where autoRetrySet.contains(restored[index].id) {
+            // 先落标记再启动任务：即使这次自动重试又被系统掐断，下次启动也不会再自动重跑。
+            restored[index].autoRetried = true
+        }
+        jobs = restored
+        if restored != loaded { history.save(restored) }
+        DouyinDebug.log("恢复转换记录 \(restored.count) 条（其中可重试失败 \(restored.filter { $0.state == .failed }.count) 条）")
+        guard !autoRetryIDs.isEmpty else { return }
+        DouyinDebug.log("自动重试上次中断的任务 \(autoRetryIDs.count) 条")
+        for jobID in autoRetryIDs {
+            retry(jobID: jobID)
+        }
+    }
+
+    private func persistJobs() {
+        history.save(jobs)
     }
 
     /// 系统错误默认是英文（真机上常见的 `The request timed out.`），
