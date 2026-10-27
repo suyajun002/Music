@@ -334,10 +334,13 @@ private struct JobRow: View {
                     service.retry(jobID: job.id)
                 }
             } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.body.weight(.semibold))
+                Label("重试", systemImage: "arrow.clockwise")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tint)
-                    .frame(width: 32, height: 32)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    .contentShape(Capsule())
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("重试")
