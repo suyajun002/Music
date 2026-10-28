@@ -101,6 +101,7 @@ struct ScrollBeastView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var controller: ScrollBeastController
     @Binding var sort: LibrarySortOrder
+    let isPlaying: Bool
     let canSort: Bool
     let canPrevious: Bool
     let canNext: Bool
@@ -133,6 +134,7 @@ struct ScrollBeastView: View {
     @State private var danceShiftX: CGFloat = 0
     @State private var danceLift: CGFloat = 0
     @State private var danceScale: CGFloat = 1
+    @State private var danceSpin: Double = 0
 
     private let contentScale: CGFloat = 0.64
     private let fistHitSize = CGSize(width: 68, height: 52)
@@ -174,8 +176,11 @@ struct ScrollBeastView: View {
             punchTask?.cancel()
             modeNoticeTask?.cancel()
         }
-        .task(id: reduceMotion) {
-            guard !reduceMotion else { return }
+        .task(id: "\(isPlaying)-\(reduceMotion)") {
+            guard isPlaying, !reduceMotion else {
+                settleDance()
+                return
+            }
             await runDanceLoop()
         }
     }
@@ -278,17 +283,21 @@ struct ScrollBeastView: View {
         .rotationEffect(.degrees(bodyTilt), anchor: .top)
         .rotationEffect(.degrees(danceTilt), anchor: .bottom)
         .rotation3DEffect(
-            .degrees(danceTurn),
+            .degrees(danceTurn + danceSpin),
             axis: (x: 0, y: 1, z: 0),
             anchor: .bottom,
             perspective: 0.55
         )
     }
 
-    /// 常驻的轻微律动：重心左右换、身体小幅转身、偶尔弹一下。
+    /// 播放时的轻微律动：重心左右换、身体小幅转身、偶尔弹一下。
+    /// 暂停时由 `settleDance()` 收回静止姿态，不再持续耗动画。
     /// 幅度刻意克制，既不盖到上下两首歌，也不影响玩偶和拳头本身的点击。
     private func runDanceLoop() async {
         try? await Task.sleep(for: .milliseconds(650))
+        guard !Task.isCancelled else { return }
+
+        var cycle = 0
         while !Task.isCancelled {
             withAnimation(.easeInOut(duration: 0.52)) {
                 danceTilt = 6
@@ -328,6 +337,42 @@ struct ScrollBeastView: View {
                 danceScale = 1
             }
             try? await Task.sleep(for: .milliseconds(1_050))
+            guard !Task.isCancelled else { return }
+
+            cycle += 1
+            if cycle.isMultiple(of: 5) {
+                await spin360()
+            }
+        }
+    }
+
+    /// 偶尔转身一圈：持续整圈转在 52pt 控制条里太吵，所以每 5 轮律动才来一次。
+    /// 360° 与 0° 视觉一致，转完直接复位，不会看到回弹。
+    private func spin360() async {
+        withAnimation(.easeInOut(duration: 0.9)) {
+            danceSpin = 360
+            danceLift = -2.5
+            danceScale = 1.04
+        }
+        try? await Task.sleep(for: .milliseconds(920))
+        guard !Task.isCancelled else { return }
+
+        danceSpin = 0
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+            danceLift = 0
+            danceScale = 1
+        }
+    }
+
+    /// 暂停/开启减弱动态效果时，收回静止姿态。
+    private func settleDance() {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            danceTilt = 0
+            danceTurn = 0
+            danceShiftX = 0
+            danceLift = 0
+            danceScale = 1
+            danceSpin = 0
         }
     }
 

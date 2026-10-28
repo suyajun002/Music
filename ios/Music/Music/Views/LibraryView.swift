@@ -165,6 +165,7 @@ struct LibraryView: View {
         ScrollBeastView(
             controller: beast,
             sort: $sort,
+            isPlaying: player.isPlaying,
             canSort: !service.library.items.isEmpty,
             canPrevious: player.currentID != nil,
             canNext: player.hasNext,
