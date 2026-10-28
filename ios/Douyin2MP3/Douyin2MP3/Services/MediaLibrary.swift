@@ -200,6 +200,42 @@ final class MediaLibrary: ObservableObject {
         if deletedLinks.count != before { persistDeletedLinks() }
     }
 
+    /// 补齐「删除记录」功能上线前删掉的条目：转换记录里仍是完成态、库里已经没有
+    /// 这个文件、也没有删除记录时，用任务里的来源补一条。
+    /// **只补显示，不自动下载** —— YouTube 仍然要用户点「重新下载」并确认费用。
+    func backfillDeletedLinks(from jobs: [Job]) {
+        let files = Set(items.map(\.fileName))
+        let ids = Set(items.map(\.id))
+        let keys = Set(items.compactMap { Self.dedupeKey(of: $0.sourceURL) })
+        var knownKeys = Set(deletedLinks.compactMap { Self.dedupeKey(of: $0.sourceURL) })
+        var added = 0
+
+        for job in jobs where job.state == .ready {
+            if let fileName = job.fileName, files.contains(fileName) { continue }
+            if let videoID = job.videoID, ids.contains(videoID) { continue }
+            let raw = job.sourceURL
+            guard let url = URL(string: raw), let source = MediaSource.of(url) else { continue }
+            let key = source.dedupeKey(for: url)
+            guard !knownKeys.contains(key), !keys.contains(key) else { continue }
+
+            deletedLinks.append(DeletedLink(
+                sourceURL: raw,
+                title: job.displayTitle,
+                deletedAt: job.createdAt
+            ))
+            knownKeys.insert(key)
+            added += 1
+        }
+
+        guard added > 0 else { return }
+        deletedLinks.sort { $0.deletedAt > $1.deletedAt }
+        if deletedLinks.count > Self.maxDeletedLinks {
+            deletedLinks.removeLast(deletedLinks.count - Self.maxDeletedLinks)
+        }
+        persistDeletedLinks()
+        DouyinDebug.log("补齐历史删除记录 \(added) 条")
+    }
+
     private static func dedupeKey(of sourceURL: String?) -> String? {
         guard let sourceURL, let url = URL(string: sourceURL), let source = MediaSource.of(url) else { return nil }
         return source.dedupeKey(for: url)

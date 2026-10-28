@@ -116,6 +116,8 @@ final class ConversionService: ObservableObject {
         self.maxConcurrent = initial
         self.gate.limit = initial
         restoreHistory()
+        // 删除记录功能上线前删掉的条目没有 DeletedLink；能从完成态任务里补回来。
+        library.backfillDeletedLinks(from: jobs)
     }
 
     /// 换 Apify token。存钥匙串、立刻生效，不用重启 —— 取流那边每次调用现读。
