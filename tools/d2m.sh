@@ -57,9 +57,9 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT="${REPO_ROOT}/ios/Douyin2MP3/Douyin2MP3.xcodeproj"
-SCHEME="Douyin2MP3"
-APP_NAME="Douyin2MP3"
+PROJECT="${REPO_ROOT}/ios/Music/Music.xcodeproj"
+SCHEME="Music"
+APP_NAME="Music"
 DERIVED="${REPO_ROOT}/build"
 APP_PATH="${DERIVED}/Build/Products/Debug-iphoneos/${APP_NAME}.app"
 

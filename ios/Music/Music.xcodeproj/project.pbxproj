@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		A1000000000000000000001 /* Douyin2MP3.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Douyin2MP3.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000000000000000000001 /* Music.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Music.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		A1000000000000000000002 /* Douyin2MP3 */ = {
+		A1000000000000000000002 /* Music */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Douyin2MP3;
+			path = Music;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -32,7 +32,7 @@
 		A1000000000000000000004 = {
 			isa = PBXGroup;
 			children = (
-				A1000000000000000000002 /* Douyin2MP3 */,
+				A1000000000000000000002 /* Music */,
 				A1000000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -40,7 +40,7 @@
 		A1000000000000000000005 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A1000000000000000000001 /* Douyin2MP3.app */,
+				A1000000000000000000001 /* Music.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,9 +48,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A1000000000000000000006 /* Douyin2MP3 */ = {
+		A1000000000000000000006 /* Music */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A1000000000000000000007 /* Build configuration list for PBXNativeTarget "Douyin2MP3" */;
+			buildConfigurationList = A1000000000000000000007 /* Build configuration list for PBXNativeTarget "Music" */;
 			buildPhases = (
 				A1000000000000000000008 /* Sources */,
 				A1000000000000000000003 /* Frameworks */,
@@ -61,13 +61,13 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				A1000000000000000000002 /* Douyin2MP3 */,
+				A1000000000000000000002 /* Music */,
 			);
-			name = Douyin2MP3;
+			name = Music;
 			packageProductDependencies = (
 			);
-			productName = Douyin2MP3;
-			productReference = A1000000000000000000001 /* Douyin2MP3.app */;
+			productName = Music;
+			productReference = A1000000000000000000001 /* Music.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -85,7 +85,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A100000000000000000000B /* Build configuration list for PBXProject "Douyin2MP3" */;
+			buildConfigurationList = A100000000000000000000B /* Build configuration list for PBXProject "Music" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -99,7 +99,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A1000000000000000000006 /* Douyin2MP3 */,
+				A1000000000000000000006 /* Music */,
 			);
 		};
 /* End PBXProject section */
@@ -231,7 +231,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A1000000000000000000007 /* Build configuration list for PBXNativeTarget "Douyin2MP3" */ = {
+		A1000000000000000000007 /* Build configuration list for PBXNativeTarget "Music" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A100000000000000000000E /* Debug */,
@@ -240,7 +240,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A100000000000000000000B /* Build configuration list for PBXProject "Douyin2MP3" */ = {
+		A100000000000000000000B /* Build configuration list for PBXProject "Music" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A100000000000000000000C /* Debug */,

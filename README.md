@@ -46,7 +46,7 @@
 ```bash
 git clone https://github.com/suyajun002/douyin2mp3.git
 cd douyin2mp3
-open ios/Douyin2MP3/Douyin2MP3.xcodeproj
+open ios/Music/Music.xcodeproj
 ```
 
 1. **Signing & Capabilities** 里选上你自己的 Apple ID 团队 —— 工程里**没有**签名团队，不选会签名失败
@@ -59,12 +59,12 @@ open ios/Douyin2MP3/Douyin2MP3.xcodeproj
 不打开 Xcode GUI 也能装：
 
 ```bash
-xcodebuild -project ios/Douyin2MP3/Douyin2MP3.xcodeproj -scheme Douyin2MP3 \
+xcodebuild -project ios/Music/Music.xcodeproj -scheme Music \
   -destination 'generic/platform=iOS' -configuration Debug \
   -allowProvisioningUpdates -derivedDataPath build build
 
 xcrun devicectl list devices                       # 查 UDID
-xcrun devicectl device install app --device <UDID> build/Build/Products/Debug-iphoneos/Douyin2MP3.app
+xcrun devicectl device install app --device <UDID> build/Build/Products/Debug-iphoneos/Music.app
 xcrun devicectl device process launch --device <UDID> com.yourname.douyin2mp3
 ```
 
@@ -73,7 +73,7 @@ xcrun devicectl device process launch --device <UDID> com.yourname.douyin2mp3
 不想把自己的团队 ID 和 bundle id 写进工程（避免提交个人配置），可以构建时从命令行传入，工程文件保持干净：
 
 ```bash
-xcodebuild -project ios/Douyin2MP3/Douyin2MP3.xcodeproj -scheme Douyin2MP3 \
+xcodebuild -project ios/Music/Music.xcodeproj -scheme Music \
   -destination 'generic/platform=iOS' -configuration Debug \
   -allowProvisioningUpdates -derivedDataPath build \
   DEVELOPMENT_TEAM=<你的团队ID> \
@@ -114,15 +114,15 @@ xcodebuild -project ios/Douyin2MP3/Douyin2MP3.xcodeproj -scheme Douyin2MP3 \
 ## 项目结构
 
 ```
-ios/Douyin2MP3/              iPhone App（SwiftUI，零依赖）
-  Douyin2MP3/Services/
+ios/Music/                   iPhone App（SwiftUI，零依赖）
+  Music/Services/
     DouyinExtractor.swift      取流：抠链接、ttwid、share 页解析、换直链
     MediaDownloader.swift      后台下载 + 进度 + 半截文件清理
     ConcurrencyGate.swift      并发闸门（纯 Foundation，可命令行单测）
     MediaLibrary.swift         资料库索引 + 标题迁移
     MediaPlayer.swift          播放、后台音频、Now Playing
     JSONEscapes.swift          标题转义解码
-  Douyin2MP3/Views/            资料库 / 转视频 / 全屏播放 / 迷你播放条
+  Music/Views/                 资料库 / 转视频 / 全屏播放 / 迷你播放条
 design/                      图标源文件（SVG）与 1024 PNG
 legacy/mac-agent/            早期方案：Mac 上常驻 agent + ffmpeg 出 MP3（已废弃，留作参考）
 ```

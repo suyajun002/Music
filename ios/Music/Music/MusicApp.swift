@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 
 @main
-struct Douyin2MP3App: App {
+struct MusicApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var service = ConversionService()
 
