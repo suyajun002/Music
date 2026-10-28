@@ -21,24 +21,11 @@ struct ConvertView: View {
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                     }
-
-                    // 「下过又删了」的链接默认不重下（YouTube 一条一钱），所以得给个明确的门：
-                    // 用户点这里才真下。不点就什么都不发生，也不会花钱。
-                    if let deleted = shownOutcome?.deleted, !deleted.isEmpty {
-                        Button {
-                            Task {
-                                let result = await service.redownload(deleted)
-                                outcome = result
-                            }
-                        } label: {
-                            Label("重新下载这 \(deleted.count) 条", systemImage: "arrow.clockwise")
-                                .font(.footnote.weight(.medium))
-                        }
-                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 10, trailing: 16))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                    }
                 }
+
+                // 默认不自动重下（YouTube 一条一钱），但删过的条目要一直能找回来。
+                // 重下成功后由入库流程清掉这条记录；失败则原样留着，可以再点。
+                DeletedLinksSection(library: service.library)
 
                 if service.jobs.isEmpty {
                     Section {
@@ -220,6 +207,90 @@ struct ConvertView: View {
         guard result.hasLink else { return }
         inputFocused = false
         input = ""
+    }
+}
+
+/// 单独观察 `MediaLibrary`：`service` 发布的是任务状态，删歌记录挂在 library 上；
+/// 不在这里直接观察它，重下成功清掉记录后这一节不会立刻从页面消失。
+private struct DeletedLinksSection: View {
+    @ObservedObject var library: MediaLibrary
+
+    var body: some View {
+        if !library.deletedLinks.isEmpty {
+            Section {
+                ForEach(library.deletedLinks) { link in
+                    DeletedLinkRow(link: link)
+                }
+            } header: {
+                Text("下过又删了")
+            }
+        }
+    }
+}
+
+private struct DeletedLinkRow: View {
+    @EnvironmentObject private var service: ConversionService
+    let link: DeletedLink
+    @State private var confirmsRedownload = false
+
+    private var url: URL? { URL(string: link.sourceURL) }
+
+    private var source: MediaSource? {
+        guard let url else { return nil }
+        return MediaSource.of(url)
+    }
+
+    private var title: String {
+        link.title.isEmpty ? "未命名" : link.title
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body)
+                    .lineLimit(1)
+
+                Text(source?.displayName ?? "未知来源")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                if source?.isPaid == true {
+                    confirmsRedownload = true
+                } else {
+                    redownload()
+                }
+            } label: {
+                Label("重新下载", systemImage: "arrow.clockwise")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.borderless)
+            .disabled(url == nil)
+            .accessibilityLabel("重新下载 \(title)")
+            .confirmationDialog(
+                "重新下载会再调用一次 Apify，可能再花约 ¥0.5。",
+                isPresented: $confirmsRedownload,
+                titleVisibility: .visible
+            ) {
+                Button("重新下载", role: .destructive) { redownload() }
+                Button("取消", role: .cancel) {}
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func redownload() {
+        guard let url else { return }
+        Task { await service.redownload([url]) }
     }
 }
 

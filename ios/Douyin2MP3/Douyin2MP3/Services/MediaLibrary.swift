@@ -20,6 +20,9 @@ final class MediaLibrary: ObservableObject {
     private var backupURL: URL { indexURL.appendingPathExtension("bak") }
     /// 索引读成功了没有。见 `persist()` 的闸门：没读成功就不许把索引写成空的。
     private var indexLoadedOK = false
+    /// 防止「启动 .task」和「scenePhase 变 active」同时触发收录，两个流程都越过
+    /// `known` 检查后再各自登记同一个文件。
+    private var isAdoptingExternalFiles = false
 
     init() {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -62,12 +65,26 @@ final class MediaLibrary: ObservableObject {
     ) async {
         if contains(videoID: videoID) { return }
         let url = directory.appendingPathComponent(fileName)
-        let artworkName = await Self.makeArtwork(
+        var artworkName = await Self.makeArtwork(
             from: url,
             provided: artworkData,
             directory: directory,
             id: videoID
         )
+        // 同一个文件只能对应一条记录。下载完成到入库之间被打断时，启动后的
+        // `adoptExternalFiles` 可能已经把这个文件登记成一条「外部导入」；任务恢复后
+        // 又带着真正的视频 ID / 标题 / 封面回来。这里合并掉旧占位记录，并优先沿用
+        // 它已有的封面，避免资料库里出现同一首歌两条、其中一条还是 UUID 标题。
+        let sameFile = items.filter { $0.fileName == fileName && $0.id != videoID }
+        if artworkName == nil {
+            artworkName = sameFile.compactMap(\.artworkFileName).first {
+                fileManager.fileExists(atPath: directory.appendingPathComponent($0).path)
+            }
+        }
+        if !sameFile.isEmpty {
+            items.removeAll { $0.fileName == fileName && $0.id != videoID }
+            DouyinDebug.log("合并同文件条目 \(sameFile.count) 条 → \(videoID)")
+        }
         let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? Int
 
         let item = MediaItem(
@@ -108,12 +125,17 @@ final class MediaLibrary: ObservableObject {
     /// 把 Documents/Video 下还没入库的媒体文件补进资料库。
     /// 「文件」App 拖进来的、或由 Mac 用 devicectl 推进来的 MP3/MP4 都靠这一步出现在列表里。
     @discardableResult
-    func adoptExternalFiles() async -> Int {
+    func adoptExternalFiles(excluding reservedFileNames: Set<String> = []) async -> Int {
+        guard !isAdoptingExternalFiles else { return 0 }
+        isAdoptingExternalFiles = true
+        defer { isAdoptingExternalFiles = false }
+
         let known = Set(items.map(\.fileName))
         let files = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
         let pending = files
             .filter { MediaKind.isSupported(fileName: $0.lastPathComponent) }
             .filter { !known.contains($0.lastPathComponent) }
+            .filter { !reservedFileNames.contains($0.lastPathComponent) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         for url in pending {
             let name = url.lastPathComponent
@@ -322,7 +344,40 @@ final class MediaLibrary: ObservableObject {
         // 留一份「上次能正常读的索引」。4 KB 的东西，换一个手工回滚的机会：
         // 万一以后某个版本写坏了索引，把 `.bak` 改回 `library.json` 就能救回全部「下过没有」的记录。
         try? data.write(to: backupURL, options: .atomic)
+        repairDuplicateFiles()
         migrateTitles()
+    }
+
+    /// 同一个文件被登记两次时，只保留真正有来源的那条（下载结果），丢掉启动时
+    /// 误把未入库文件当外部导入生成的占位条目。只改索引，不删媒体文件。
+    private func repairDuplicateFiles() {
+        let groups = Dictionary(grouping: items, by: \.fileName)
+        let duplicates = groups.values.filter { $0.count > 1 }
+        guard !duplicates.isEmpty else { return }
+
+        var droppedIDs = Set<String>()
+        for group in duplicates {
+            let keeper = group.max { lhs, rhs in
+                let left = Self.preferenceScore(lhs)
+                let right = Self.preferenceScore(rhs)
+                if left != right { return left < right }
+                return lhs.savedAt < rhs.savedAt
+            } ?? group[0]
+            for item in group where item.id != keeper.id {
+                droppedIDs.insert(item.id)
+            }
+        }
+        guard !droppedIDs.isEmpty else { return }
+        items.removeAll { droppedIDs.contains($0.id) }
+        DouyinDebug.log("清理同文件重复条目 \(droppedIDs.count) 条")
+        persist()
+    }
+
+    private static func preferenceScore(_ item: MediaItem) -> Int {
+        var score = item.sourceURL == nil ? 0 : 10
+        if item.artworkFileName != nil { score += 2 }
+        if Segments.parse(item.fileName) == nil { score += 1 }
+        return score
     }
 
     /// 老版本取流时标题没解转义（会显示成「开车\u002F健身」），这里就地修一次并回写，

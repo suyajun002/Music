@@ -145,7 +145,12 @@ final class ConversionService: ObservableObject {
     /// 收录外部放进 Documents 的媒体文件（「文件」App 拖入、或 Mac 用 devicectl 推入）。
     /// 只登记本地文件，不联网、不下载。
     func adoptExternalMedia() async {
-        let adopted = await library.adoptExternalFiles()
+        // 下载器先落到最终文件名、再由 `register` 入库。若 App 在这中间被打断，
+        // 下次启动时文件已经在 `Documents/Video` 里但还没有索引记录；直接当外部
+        // 文件收进来，稍后自动重试完成又会登记同一文件，于是同一首歌出现两条、
+        // 占位那条标题还是 UUID。所有转换任务名下的文件都不参与外部收录。
+        let reserved = Set(jobs.compactMap(\.fileName))
+        let adopted = await library.adoptExternalFiles(excluding: reserved)
         if adopted > 0 { DouyinDebug.log("资料库收录外部文件 \(adopted) 个") }
     }
 
