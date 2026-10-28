@@ -300,31 +300,31 @@ struct ScrollBeastView: View {
         var cycle = 0
         while !Task.isCancelled {
             withAnimation(.easeInOut(duration: 0.52)) {
-                danceTilt = 6
-                danceTurn = 16
-                danceShiftX = 2
-                danceLift = -1.5
-                danceScale = 1.035
+                danceTilt = 8
+                danceTurn = 20
+                danceShiftX = 3
+                danceLift = -2
+                danceScale = 1.05
             }
             try? await Task.sleep(for: .milliseconds(540))
             guard !Task.isCancelled else { return }
 
             withAnimation(.easeInOut(duration: 0.50)) {
-                danceTilt = -5.5
-                danceTurn = -16
-                danceShiftX = -2
+                danceTilt = -7
+                danceTurn = -20
+                danceShiftX = -2.5
                 danceLift = 0
-                danceScale = 0.985
+                danceScale = 0.98
             }
             try? await Task.sleep(for: .milliseconds(520))
             guard !Task.isCancelled else { return }
 
             withAnimation(.easeInOut(duration: 0.44)) {
-                danceTilt = 3
-                danceTurn = 8
-                danceShiftX = 1
+                danceTilt = 4
+                danceTurn = 10
+                danceShiftX = 1.5
                 danceLift = -1
-                danceScale = 1.015
+                danceScale = 1.02
             }
             try? await Task.sleep(for: .milliseconds(460))
             guard !Task.isCancelled else { return }
@@ -340,22 +340,27 @@ struct ScrollBeastView: View {
             guard !Task.isCancelled else { return }
 
             cycle += 1
-            if cycle.isMultiple(of: 5) {
+            if cycle.isMultiple(of: 3) {
                 await spin360()
             }
         }
     }
 
-    /// 偶尔转身一圈：持续整圈转在 52pt 控制条里太吵，所以每 5 轮律动才来一次。
-    /// 360° 与 0° 视觉一致，转完直接复位，不会看到回弹。
+    /// 每 3 轮律动转一圈。必须按小步推进，不能直接 `0 → 360`：
+    /// SwiftUI 会把首尾相同的角度当最短路径，实际一帧都不转。
     private func spin360() async {
-        withAnimation(.easeInOut(duration: 0.9)) {
-            danceSpin = 360
-            danceLift = -2.5
-            danceScale = 1.04
+        withAnimation(.easeOut(duration: 0.16)) {
+            danceLift = -3
+            danceScale = 1.06
         }
-        try? await Task.sleep(for: .milliseconds(920))
-        guard !Task.isCancelled else { return }
+
+        for step in 1...12 {
+            withAnimation(.linear(duration: 0.05)) {
+                danceSpin = Double(step) * 30
+            }
+            try? await Task.sleep(for: .milliseconds(55))
+            guard !Task.isCancelled else { return }
+        }
 
         danceSpin = 0
         withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
