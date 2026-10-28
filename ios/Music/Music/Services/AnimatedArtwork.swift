@@ -112,7 +112,7 @@ enum AnimatedArtwork {
     static func make() -> MPMediaItemAnimatedArtwork? {
         guard let videoURL else { return nil }
         return MPMediaItemAnimatedArtwork(
-            artworkID: "d2m.cat.v2",
+            artworkID: "music.cat.v2",
             previewImageRequestHandler: { size in
                 // 预览图要尽快返回（头文件建议「理想情况下同步返回」），所以直接给缓存好的静帧，
                 // 让系统按需要缩放。

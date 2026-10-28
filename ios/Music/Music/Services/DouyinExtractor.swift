@@ -9,7 +9,7 @@ enum MusicDebug {
 
     static func log(_ message: @autoclosure () -> String) {
         guard enabled else { return }
-        print("[d2m] \(message())")
+        print("[music] \(message())")
         // stdout 在 `devicectl --console` 这种管道下是块缓冲的：不主动 flush，
         // 进程被 kill（或 --terminate-existing）时最后几行还在缓冲里，日志会缺关键结论。
         fflush(stdout)

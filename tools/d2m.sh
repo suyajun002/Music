@@ -32,7 +32,7 @@
 #   D2M_TEAM       Apple 开发者团队 ID（构建必需）。查法：
 #                    security find-certificate -c "Apple Development: <email>" -p \
 #                      | openssl x509 -noout -subject | grep -o 'OU=[^,]*'
-#   D2M_APP_ID     App 的 bundle id（默认 com.example.douyin2mp3）
+#   D2M_APP_ID     App 的 bundle id（默认 com.example.music）
 #   D2M_DEVICE     本机直连时的设备 UDID（不设 = 自动挑第一台可用设备）
 #   D2M_REMOTE     ssh 目标，如 <用户>@<mac-mini-ip>；留空 = 不走远端
 #   D2M_REMOTE_DEVICE  远端那台机器上设备的 **CoreDevice UUID**（跟本机看到的
@@ -40,7 +40,7 @@
 #   D2M_REMOTE_DIR 远端放 .app 的目录（默认 ~/d2m-build）
 #
 # 常用环境变量开关（透传到 App 里，见 SKILL.md「真机诊断」）
-#   D2M_DEBUG=1        打印 [d2m] 取流/下载细节
+#   D2M_DEBUG=1        打印 [music] 取流/下载细节
 #   D2M_MODE_DEMO=1    跑一遍顺序/随机播放模式自检
 #   D2M_JUMP_DEMO=1    跑一遍续播「切走再切回来」自检
 #   D2M_PREVIEW_DEMO=1 跑一遍试听「按未保存区间放、到点停」自检
@@ -69,7 +69,7 @@ if [[ -f "${HOME}/.config/d2m/env" ]]; then
   source "${HOME}/.config/d2m/env"
 fi
 
-D2M_APP_ID="${D2M_APP_ID:-com.example.douyin2mp3}"
+D2M_APP_ID="${D2M_APP_ID:-com.example.music}"
 D2M_REMOTE="${D2M_REMOTE:-}"
 D2M_REMOTE_DIR="${D2M_REMOTE_DIR:-~/d2m-build}"
 SSH_OPTS=(-o ConnectTimeout=15 -o BatchMode=yes)
@@ -189,7 +189,7 @@ cmd_build() {
   info "${DIM}编译 ${SCHEME}（team=${D2M_TEAM} app_id=${D2M_APP_ID}）${OFF}"
   local log
   log="$(mktemp)"
-  # ⚠️ D2M_APP_ID 必须传：工程里是占位值 com.example.douyin2mp3。
+  # ⚠️ D2M_APP_ID 必须传：工程里是占位值 com.example.music。
   # ⚠️ DEVELOPMENT_TEAM 同理，是个人值，留在命令行、不写回仓库。
   if ! xcodebuild \
       -project "${PROJECT}" \

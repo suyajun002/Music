@@ -50,7 +50,7 @@ open ios/Music/Music.xcodeproj
 ```
 
 1. **Signing & Capabilities** 里选上你自己的 Apple ID 团队 —— 工程里**没有**签名团队，不选会签名失败
-2. 把 bundle id 从占位值 `com.example.douyin2mp3` 改成你自己的，例如 `com.yourname.douyin2mp3`
+2. 把 bundle id 从占位值 `com.example.music` 改成你自己的，例如 `com.yourname.music`
 3. 选中你的 iPhone，Run
 4. 首次运行要在手机上信任证书：**设置 → 通用 → VPN 与设备管理 → 开发者 App → 信任**
 
@@ -65,7 +65,7 @@ xcodebuild -project ios/Music/Music.xcodeproj -scheme Music \
 
 xcrun devicectl list devices                       # 查 UDID
 xcrun devicectl device install app --device <UDID> build/Build/Products/Debug-iphoneos/Music.app
-xcrun devicectl device process launch --device <UDID> com.yourname.douyin2mp3
+xcrun devicectl device process launch --device <UDID> com.yourname.music
 ```
 
 `devicectl` 安装和启动都要求手机**已解锁且亮屏**，否则报 `device was not, or could not be, unlocked`。
@@ -77,7 +77,7 @@ xcodebuild -project ios/Music/Music.xcodeproj -scheme Music \
   -destination 'generic/platform=iOS' -configuration Debug \
   -allowProvisioningUpdates -derivedDataPath build \
   DEVELOPMENT_TEAM=<你的团队ID> \
-  PRODUCT_BUNDLE_IDENTIFIER=com.yourname.douyin2mp3 \
+  PRODUCT_BUNDLE_IDENTIFIER=com.yourname.music \
   build
 ```
 
