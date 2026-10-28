@@ -36,6 +36,16 @@ struct LibraryView: View {
     /// 萌宠），试听要的就是「跟真放一样，只是区间不同」。另开一路 AVPlayer 要多养一套，
     /// 还得处理「两路声音谁说了算」—— 见 `MediaPlayer.preview`。
     @State private var previewing: (from: Double, to: Double)?
+    /// 模拟器验收用：不用真的放一首歌，也能让玩偶进入「播放中」。
+    private var beastIsPlaying: Bool {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["D2M_BEAST_PLAY"] == "1" {
+            return true
+        }
+#endif
+        return player.isPlaying
+    }
+
     private var items: [MediaItem] {
         let base = service.library.items
         switch sort {
@@ -165,7 +175,7 @@ struct LibraryView: View {
         ScrollBeastView(
             controller: beast,
             sort: $sort,
-            isPlaying: player.isPlaying,
+            isPlaying: beastIsPlaying,
             canSort: !service.library.items.isEmpty,
             canPrevious: player.currentID != nil,
             canNext: player.hasNext,

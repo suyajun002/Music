@@ -14,3 +14,7 @@ node_modules/
 
 # macOS
 .DS_Store
+
+# 本机构建归档
+build-archive/
+build-release/

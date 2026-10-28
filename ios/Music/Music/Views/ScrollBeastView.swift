@@ -130,11 +130,10 @@ struct ScrollBeastView: View {
     @State private var modeNotice: String?
     @State private var modeNoticeTask: Task<Void, Never>?
     @State private var danceTilt: Double = 0
-    @State private var danceTurn: Double = 0
     @State private var danceShiftX: CGFloat = 0
     @State private var danceLift: CGFloat = 0
     @State private var danceScale: CGFloat = 1
-    @State private var danceSpin: Double = 0
+    @State private var spin = BeastSpin()
 
     private let contentScale: CGFloat = 0.64
     private let fistHitSize = CGSize(width: 68, height: 52)
@@ -178,9 +177,15 @@ struct ScrollBeastView: View {
         }
         .task(id: "\(isPlaying)-\(reduceMotion)") {
             guard isPlaying, !reduceMotion else {
+                spin.stop(at: Date())
                 settleDance()
+                // 暂停后补完当前这一圈，再让时间轴停下，别一直按帧刷新。
+                try? await Task.sleep(for: .milliseconds(650))
+                guard !Task.isCancelled else { return }
+                spin.finishSettle()
                 return
             }
+            spin.start(at: Date())
             await runDanceLoop()
         }
     }
@@ -264,120 +269,68 @@ struct ScrollBeastView: View {
         }
     }
 
+    /// 播放时像唱盘一样一直转，暂停时补完当前这一圈停在正面。
     private var creature: some View {
-        ZStack {
-            Capsule()
-                .fill(goldGradient)
-                .frame(width: 76, height: 58)
-                .overlay(alignment: .top) { horns }
-                .overlay { face }
-                .overlay(alignment: .bottom) { paws }
-                .shadow(color: Color.orange.opacity(0.20), radius: 7, y: 3)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !spin.isActive)) { context in
+            ZStack {
+                Capsule()
+                    .fill(goldGradient)
+                    .frame(width: 76, height: 58)
+                    .overlay(alignment: .top) { horns }
+                    .overlay { face }
+                    .overlay(alignment: .bottom) { paws }
+                    .shadow(color: Color.orange.opacity(0.20), radius: 7, y: 3)
 
-            treat
+                treat
+            }
+            .frame(width: 92, height: 78)
+            .scaleEffect(x: bodyScaleX, y: bodyScaleY, anchor: .top)
+            .scaleEffect(danceScale, anchor: .bottom)
+            .offset(x: bodyShiftX + danceShiftX, y: danceLift)
+            .rotationEffect(.degrees(bodyTilt), anchor: .top)
+            .rotationEffect(.degrees(danceTilt), anchor: .bottom)
+            .rotation3DEffect(
+                .degrees(spin.angle(at: context.date)),
+                axis: (x: 0, y: 1, z: 0),
+                anchor: .bottom,
+                perspective: 0.55
+            )
         }
-        .frame(width: 92, height: 78)
-        .scaleEffect(x: bodyScaleX, y: bodyScaleY, anchor: .top)
-        .scaleEffect(danceScale, anchor: .bottom)
-        .offset(x: bodyShiftX + danceShiftX, y: danceLift)
-        .rotationEffect(.degrees(bodyTilt), anchor: .top)
-        .rotationEffect(.degrees(danceTilt), anchor: .bottom)
-        .rotation3DEffect(
-            .degrees(danceTurn + danceSpin),
-            axis: (x: 0, y: 1, z: 0),
-            anchor: .bottom,
-            perspective: 0.55
-        )
     }
 
-    /// 播放时的轻微律动：重心左右换、身体小幅转身、偶尔弹一下。
-    /// 暂停时由 `settleDance()` 收回静止姿态，不再持续耗动画。
-    /// 幅度刻意克制，既不盖到上下两首歌，也不影响玩偶和拳头本身的点击。
+    /// 播放时的呼吸和轻跳；旋转由 `BeastSpin` 按时间驱动，两者不共用角度。
     private func runDanceLoop() async {
-        try? await Task.sleep(for: .milliseconds(650))
+        try? await Task.sleep(for: .milliseconds(450))
         guard !Task.isCancelled else { return }
 
-        var cycle = 0
         while !Task.isCancelled {
-            withAnimation(.easeInOut(duration: 0.52)) {
-                danceTilt = 8
-                danceTurn = 20
-                danceShiftX = 3
-                danceLift = -2
-                danceScale = 1.05
-            }
-            try? await Task.sleep(for: .milliseconds(540))
-            guard !Task.isCancelled else { return }
-
-            withAnimation(.easeInOut(duration: 0.50)) {
-                danceTilt = -7
-                danceTurn = -20
-                danceShiftX = -2.5
-                danceLift = 0
-                danceScale = 0.98
-            }
-            try? await Task.sleep(for: .milliseconds(520))
-            guard !Task.isCancelled else { return }
-
-            withAnimation(.easeInOut(duration: 0.44)) {
-                danceTilt = 4
-                danceTurn = 10
+            withAnimation(.easeInOut(duration: 0.62)) {
+                danceLift = -2.5
+                danceScale = 1.04
+                danceTilt = 5
                 danceShiftX = 1.5
-                danceLift = -1
-                danceScale = 1.02
             }
-            try? await Task.sleep(for: .milliseconds(460))
+            try? await Task.sleep(for: .milliseconds(620))
             guard !Task.isCancelled else { return }
 
-            withAnimation(.spring(response: 0.48, dampingFraction: 0.72)) {
-                danceTilt = 0
-                danceTurn = 0
-                danceShiftX = 0
+            withAnimation(.easeInOut(duration: 0.58)) {
                 danceLift = 0
-                danceScale = 1
+                danceScale = 0.99
+                danceTilt = -4
+                danceShiftX = -1.5
             }
-            try? await Task.sleep(for: .milliseconds(1_050))
+            try? await Task.sleep(for: .milliseconds(580))
             guard !Task.isCancelled else { return }
-
-            cycle += 1
-            if cycle.isMultiple(of: 3) {
-                await spin360()
-            }
         }
     }
 
-    /// 每 3 轮律动转一圈。必须按小步推进，不能直接 `0 → 360`：
-    /// SwiftUI 会把首尾相同的角度当最短路径，实际一帧都不转。
-    private func spin360() async {
-        withAnimation(.easeOut(duration: 0.16)) {
-            danceLift = -3
-            danceScale = 1.06
-        }
-
-        for step in 1...12 {
-            withAnimation(.linear(duration: 0.05)) {
-                danceSpin = Double(step) * 30
-            }
-            try? await Task.sleep(for: .milliseconds(55))
-            guard !Task.isCancelled else { return }
-        }
-
-        danceSpin = 0
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
-            danceLift = 0
-            danceScale = 1
-        }
-    }
-
-    /// 暂停/开启减弱动态效果时，收回静止姿态。
+    /// 暂停或开启减弱动态效果时，收回律动姿态（旋转角度由 `spin` 自己收尾）。
     private func settleDance() {
         withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
             danceTilt = 0
-            danceTurn = 0
             danceShiftX = 0
             danceLift = 0
             danceScale = 1
-            danceSpin = 0
         }
     }
 
@@ -654,6 +607,71 @@ struct ScrollBeastView: View {
                 modeNotice = nil
             }
         }
+    }
+}
+
+/// 玩偶的持续旋转。
+///
+/// 不用 `withAnimation { angle = 360 }`：SwiftUI 会把首尾相同的角度当成最短路径，
+/// 结果是一帧都不转；`repeatForever` 动画也没法在暂停时停在当前角度。
+/// 这里按时间直接算角度，暂停时沿原方向补完这一圈，再停止刷新。
+private struct BeastSpin {
+    /// 15 秒一圈：比唱盘略快，52pt 的小玩偶才看得出在转。
+    static let degreesPerSecond: Double = 360 / 15
+
+    private var base: Double = 0
+    private var startedAt: Date?
+    private var settle: Settle?
+
+    private struct Settle {
+        let from: Double
+        let to: Double
+        let start: Date
+        let duration: Double
+    }
+
+    /// 是否还需要按帧刷新。补完暂停那半圈后转 false。
+    var isActive: Bool { startedAt != nil || settle != nil }
+
+    func angle(at date: Date) -> Double {
+        if let settle {
+            return settle.from + (settle.to - settle.from) * Self.progress(of: settle, at: date)
+        }
+        guard let startedAt else { return base }
+        return base + date.timeIntervalSince(startedAt) * Self.degreesPerSecond
+    }
+
+    mutating func start(at date: Date) {
+        if let settle {
+            // 在收尾动画中途重新播放：从当前角度接着转，不跳回正面。
+            base = settle.from + (settle.to - settle.from) * Self.progress(of: settle, at: date)
+            self.settle = nil
+        }
+        guard startedAt == nil else { return }
+        startedAt = date
+    }
+
+    mutating func stop(at date: Date) {
+        guard let startedAt else { return }
+        let current = base + date.timeIntervalSince(startedAt) * Self.degreesPerSecond
+        self.startedAt = nil
+        base = 0
+        // 2D 玩偶停在侧面会被压成一条线，所以补完这一圈回到正面。
+        let facing = (current / 360).rounded(.up) * 360
+        settle = facing - current < 0.5
+            ? nil
+            : Settle(from: current, to: facing, start: date, duration: 0.5)
+    }
+
+    mutating func finishSettle() {
+        settle = nil
+    }
+
+    private static func progress(of settle: Settle, at date: Date) -> Double {
+        let raw = date.timeIntervalSince(settle.start) / settle.duration
+        let clamped = min(1, max(0, raw))
+        // ease-out：收尾时减速，看起来像自己停下来。
+        return 1 - pow(1 - clamped, 3)
     }
 }
 
