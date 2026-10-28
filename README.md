@@ -44,8 +44,8 @@
 需要 macOS + Xcode + 一台 iPhone（iOS 18+）。
 
 ```bash
-git clone https://github.com/suyajun002/douyin2mp3.git   # 仓库 URL 暂未改名
-cd douyin2mp3
+git clone https://github.com/suyajun002/Music.git
+cd Music
 open ios/Music/Music.xcodeproj
 ```
 
