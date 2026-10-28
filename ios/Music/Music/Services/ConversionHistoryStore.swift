@@ -44,7 +44,7 @@ struct ConversionHistoryStore {
             let stamp = Int(Date().timeIntervalSince1970)
             let corrupt = fileURL.appendingPathExtension("corrupt-\(stamp)")
             try? fileManager.moveItem(at: fileURL, to: corrupt)
-            DouyinDebug.log("转换记录解码失败，已留档 \(corrupt.lastPathComponent)")
+            MusicDebug.log("转换记录解码失败，已留档 \(corrupt.lastPathComponent)")
             return []
         }
 
@@ -59,7 +59,7 @@ struct ConversionHistoryStore {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: fileURL, options: .atomic)
         } catch {
-            DouyinDebug.log("转换记录写盘失败：\(error.localizedDescription)")
+            MusicDebug.log("转换记录写盘失败：\(error.localizedDescription)")
         }
     }
 

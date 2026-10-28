@@ -205,7 +205,7 @@ final class MediaPlayer: ObservableObject {
         let plan = makeOrder(startingAt: qi)
         order = plan.order
         index = plan.index
-        DouyinDebug.log("播放模式：\(new.label)（当前《\(currentTitle)》不变，只重排后续）")
+        MusicDebug.log("播放模式：\(new.label)（当前《\(currentTitle)》不变，只重排后续）")
     }
 
     func toggleMode() {
@@ -283,7 +283,7 @@ final class MediaPlayer: ObservableObject {
         // 上次那首被删了就退回第一首：用户要的是「打开就有声」，不是「精确回到某首」
         let start = savedID.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
 
-        DouyinDebug.log(savedID != nil && items[start].id == savedID
+        MusicDebug.log(savedID != nil && items[start].id == savedID
             ? "冷启动续播：接上次那首《\(items[start].title)》"
             : "冷启动续播：没有存档（或那首已被删），从第一首《\(items[start].title)》开始")
         play(items: items, startIndex: start)
@@ -306,7 +306,7 @@ final class MediaPlayer: ObservableObject {
         map[id] = position
         savedPositions = map
         UserDefaults.standard.set(id, forKey: Self.lastIDKey)
-        DouyinDebug.log("存档《\(currentTitle)》：\(Int(position))s / \(Int(duration))s")
+        MusicDebug.log("存档《\(currentTitle)》：\(Int(position))s / \(Int(duration))s")
     }
 
     func next() {
@@ -381,7 +381,7 @@ final class MediaPlayer: ObservableObject {
         // `seekDirectly` 用的正是「AVPlayer 会挂起这个 seek、等条目就绪后自己执行」，
         // 所以这里不需要等时长加载完，直接落即可。
         seekDirectly(toSeconds: skip)
-        DouyinDebug.log("跳过前奏：《\(item.title)》从 \(Int(skip))s 起（省掉开头 \(Int(skip))s）")
+        MusicDebug.log("跳过前奏：《\(item.title)》从 \(Int(skip))s 起（省掉开头 \(Int(skip))s）")
     }
 
     /// 接上这一首上次听到的地方。门槛 1 秒：比这更短说明上次基本没听，从头放更符合直觉。
@@ -403,9 +403,9 @@ final class MediaPlayer: ObservableObject {
         let ceiling = total > 0 && end > 0 && end < total - 1 ? total - end : target
         seekDirectly(toSeconds: min(target, max(ceiling, target)))
         if skip > saved {
-            DouyinDebug.log("跳过前奏：《\(item.title)》从 \(Int(skip))s 起（续播点 \(Int(saved))s 还在前奏里）")
+            MusicDebug.log("跳过前奏：《\(item.title)》从 \(Int(skip))s 起（续播点 \(Int(saved))s 还在前奏里）")
         } else {
-            DouyinDebug.log("切歌续播：《\(item.title)》从 \(Int(saved))s 接上")
+            MusicDebug.log("切歌续播：《\(item.title)》从 \(Int(saved))s 接上")
         }
     }
 
@@ -419,7 +419,7 @@ final class MediaPlayer: ObservableObject {
     func markIntroEndHere() {
         guard let id = currentID, elapsed > 0 else { return }
         IntroSkip.shared.setStart(elapsed, for: id)
-        DouyinDebug.log("设跳过前奏：《\(currentTitle)》起点 \(Int(elapsed))s")
+        MusicDebug.log("设跳过前奏：《\(currentTitle)》起点 \(Int(elapsed))s")
     }
 
     /// 把这位置设成「跳过结尾」的提前量 —— 即「从这里开始就不要了」。
@@ -428,14 +428,14 @@ final class MediaPlayer: ObservableObject {
     func markEndTrimHere() {
         guard let id = currentID, duration > 0, elapsed > 0 else { return }
         IntroSkip.shared.setEndTrim(duration - elapsed, for: id)
-        DouyinDebug.log("设跳过结尾：《\(currentTitle)》从 \(Int(elapsed))s 起不要（末尾省 \(Int(duration - elapsed))s）")
+        MusicDebug.log("设跳过结尾：《\(currentTitle)》从 \(Int(elapsed))s 起不要（末尾省 \(Int(duration - elapsed))s）")
     }
 
     /// 取消这首的跳过开头。
     func clearIntroSkip() {
         guard let id = currentID else { return }
         IntroSkip.shared.setStart(0, for: id)
-        DouyinDebug.log("取消跳过前奏：《\(currentTitle)》")
+        MusicDebug.log("取消跳过前奏：《\(currentTitle)》")
     }
 
     /// 到了 `activeEnd` 之后的收尾。**三种情形全在这里判**（试听 / 有下一首 / 最后一首）——
@@ -459,7 +459,7 @@ private func finishAtTrim() {
             return
         }
         // 最后一首：停在 activeEnd，标记为「放完了」
-        DouyinDebug.log("跳过结尾：《\(currentTitle)》在第 \(Int(effectiveEnd))s 结束（末尾省掉 \(Int(IntroSkip.shared.endTrim(for: currentID)))s）")
+        MusicDebug.log("跳过结尾：《\(currentTitle)》在第 \(Int(effectiveEnd))s 结束（末尾省掉 \(Int(IntroSkip.shared.endTrim(for: currentID)))s）")
         player.pause()
     }
 
@@ -489,7 +489,7 @@ private func finishAtTrim() {
             previewRange = existing
             seekDirectly(toSeconds: from)
             if !isPlaying { play() }
-            DouyinDebug.log("试听（改区间）：《\(item.title)》\(Self.format(from)) → \(Self.format(to))")
+            MusicDebug.log("试听（改区间）：《\(item.title)》\(Self.format(from)) → \(Self.format(to))")
             return
         }
 
@@ -510,7 +510,7 @@ private func finishAtTrim() {
             previewRange = nil
             return
         }
-        DouyinDebug.log("试听：《\(item.title)》\(Self.format(from)) → \(Self.format(to))"
+        MusicDebug.log("试听：《\(item.title)》\(Self.format(from)) → \(Self.format(to))"
                         + "（\(sameTrack ? "同一首，原位 \(Int(origin ?? 0))s" : "换了首歌，不还原")）")
     }
 
@@ -525,12 +525,12 @@ private func finishAtTrim() {
             // 看着像"跳到这里就停了"，很怪。回到 0:00 是唯一稳定的落点。
             seekDirectly(toSeconds: 0)
             pause()
-            DouyinDebug.log("试听结束：《\(currentTitle)》停在这首开头（未换回原曲）")
+            MusicDebug.log("试听结束：《\(currentTitle)》停在这首开头（未换回原曲）")
             return
         }
         seekDirectly(toSeconds: origin)
         if !p.wasPlaying { pause() }
-        DouyinDebug.log("试听结束：《\(currentTitle)》回到 \(Int(origin))s")
+        MusicDebug.log("试听结束：《\(currentTitle)》回到 \(Int(origin))s")
     }
 
     // MARK: - 真机自检（`D2M_*` 环境变量触发）
@@ -541,14 +541,14 @@ private func finishAtTrim() {
     func runJumpDemoIfRequested() async {
         guard ProcessInfo.processInfo.environment["D2M_JUMP_DEMO"] == "1" else { return }
         guard currentID != nil else {
-            DouyinDebug.log("跳转演示：没有在放的东西，跳过")
+            MusicDebug.log("跳转演示：没有在放的东西，跳过")
             return
         }
         try? await Task.sleep(for: .seconds(6))
-        DouyinDebug.log("跳转演示：切下一首")
+        MusicDebug.log("跳转演示：切下一首")
         next()
         try? await Task.sleep(for: .seconds(6))
-        DouyinDebug.log("跳转演示：切回上一首（应该接上刚才离开的位置）")
+        MusicDebug.log("跳转演示：切回上一首（应该接上刚才离开的位置）")
         // 不走 `previous()`：那里有「播放 3 秒内按上一首才真切歌」的规矩，
         // 而这里已经听了 6 秒，会被它当成「回到本首开头」而不是切回去。
         guard hasPrevious else { return }
@@ -565,13 +565,13 @@ private func finishAtTrim() {
     func runModeDemoIfRequested() async {
         guard ProcessInfo.processInfo.environment["D2M_MODE_DEMO"] == "1" else { return }
         guard !queue.isEmpty else {
-            DouyinDebug.log("模式演示：队列为空，跳过")
+            MusicDebug.log("模式演示：队列为空，跳过")
             return
         }
         func report(_ tag: String) {
             // 只打**顺序号**不打歌名：名字里带括号和中文，读日志时反而看不清是不是同一首。
             let seq = order.enumerated().map { $0.offset == index ? "[\($0.element)]" : "\($0.element)" }
-            DouyinDebug.log("模式演示 \(tag)：模式=\(mode.label) 位置=\(index)/\(order.count) 排列=\(seq.joined(separator: ",")) 在放《\(currentTitle)》")
+            MusicDebug.log("模式演示 \(tag)：模式=\(mode.label) 位置=\(index)/\(order.count) 排列=\(seq.joined(separator: ",")) 在放《\(currentTitle)》")
         }
         report("起点")
 
@@ -580,9 +580,9 @@ private func finishAtTrim() {
 
         // 顺序模式连切 3 首，应当规规矩矩往后走
         for i in 1...3 {
-            guard hasNext else { DouyinDebug.log("模式演示：顺序模式已到队尾，停"); break }
+            guard hasNext else { MusicDebug.log("模式演示：顺序模式已到队尾，停"); break }
             next()
-            DouyinDebug.log("模式演示 顺序第\(i)次下一首 → 《\(currentTitle)》")
+            MusicDebug.log("模式演示 顺序第\(i)次下一首 → 《\(currentTitle)》")
         }
 
         setMode(.shuffle)
@@ -595,11 +595,11 @@ private func finishAtTrim() {
             next()
             let id = currentID ?? "?"
             if seen.contains(id) {
-                DouyinDebug.log("模式演示 ⚠️ 随机一轮内出现重复：\(seen.count) 次后撞上同一首")
+                MusicDebug.log("模式演示 ⚠️ 随机一轮内出现重复：\(seen.count) 次后撞上同一首")
             }
             seen.append(id)
         }
-        DouyinDebug.log("模式演示 随机连切 \(seen.count - 1) 首，去重后 \(Set(seen).count) 首（相等=没重复）")
+        MusicDebug.log("模式演示 随机连切 \(seen.count - 1) 首，去重后 \(Set(seen).count) 首（相等=没重复）")
 
         setMode(.sequence)
         report("切回顺序")
@@ -614,7 +614,7 @@ private func finishAtTrim() {
     func runPreviewDemoIfRequested() async {
         guard ProcessInfo.processInfo.environment["D2M_PREVIEW_DEMO"] == "1" else { return }
         guard queue.count >= 2 else {
-            DouyinDebug.log("试听演示：队列不足 2 首，跳过")
+            MusicDebug.log("试听演示：队列不足 2 首，跳过")
             return
         }
         // 拿第二首试听：它会顺带验「试听会把播放切到这首」。
@@ -630,7 +630,7 @@ private func finishAtTrim() {
         let from = min(4.0, max(0, duration - 1))
         let to = max(from + 3, from + 1)
         preview(item: target, from: from, to: to, using: queue)
-        DouyinDebug.log("试听演示 起播：《\(currentTitle)》elapsed=\(Int(elapsed))s 区间=\(Int(from))→\(Int(to))s"
+        MusicDebug.log("试听演示 起播：《\(currentTitle)》elapsed=\(Int(elapsed))s 区间=\(Int(from))→\(Int(to))s"
                         + " activeEnd=\(Int(activeEnd))s 在放=\(isPlaying) 试听中=\(isPreviewing)")
 
         // 等这一段放完 + 2 秒余量（周期观察者是 0.5 秒一轮）
@@ -640,16 +640,16 @@ private func finishAtTrim() {
         // 这条正是最容易错的地方，错了要一眼看出来。
         let stayed = currentID == target.id
         let ended = !isPreviewing
-        DouyinDebug.log("试听演示 收尾：还在《\(currentTitle)》上=\(stayed)"
+        MusicDebug.log("试听演示 收尾：还在《\(currentTitle)》上=\(stayed)"
                         + " 试听已结束=\(ended) elapsed=\(Int(elapsed))s")
         if stayed, ended {
-            DouyinDebug.log("试听演示 ✅ 通过：到点自己停了，没被切到下一首")
+            MusicDebug.log("试听演示 ✅ 通过：到点自己停了，没被切到下一首")
         } else if !stayed {
-            DouyinDebug.log("试听演示 ❌ 失败：试听到点被切到了《\(currentTitle)》（应当停在试听那首）")
+            MusicDebug.log("试听演示 ❌ 失败：试听到点被切到了《\(currentTitle)》（应当停在试听那首）")
         } else {
-            DouyinDebug.log("试听演示 ❌ 失败：试听状态没在到点时收掉（isPreviewing 仍为 true）")
+            MusicDebug.log("试听演示 ❌ 失败：试听状态没在到点时收掉（isPreviewing 仍为 true）")
         }
-        DouyinDebug.log("试听演示 比对：试听前在《\(beforeID ?? "nil")》第 \(Int(beforeElapsed))s；"
+        MusicDebug.log("试听演示 比对：试听前在《\(beforeID ?? "nil")》第 \(Int(beforeElapsed))s；"
                         + "现在 currentID=\(currentID ?? "nil")")
     }
 

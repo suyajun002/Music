@@ -2,7 +2,7 @@
   <img src="design/appicon-1024.png" width="128" alt="App icon">
 </p>
 
-<h1 align="center">douyin2mp3</h1>
+<h1 align="center">Music</h1>
 
 <p align="center">
   把抖音分享链接变成 iPhone 上能离线听的本地视频。<br>
@@ -27,7 +27,7 @@
 - **不重编码**：直接保存原始 MP4，用 `AVPlayer` 播它的音轨 —— 没有转码损失，也不用等转码
 - **确定性代码**：没有任何模型调用，接口变了只改一个 `DouyinExtractor.swift`
 
-> 名字叫 `douyin2mp3`，但它**不做 MP3 转码**。iOS 能直接播 MP4 的音轨，转码只会多花时间、损失音质。所以 App 存原始文件、按音频来听。
+> App 名叫 `Music`，但它**不做 MP3 转码**。iOS 能直接播 MP4 的音轨，转码只会多花时间、损失音质。所以 App 存原始文件、按音频来听。
 
 ## 功能
 
@@ -44,7 +44,7 @@
 需要 macOS + Xcode + 一台 iPhone（iOS 18+）。
 
 ```bash
-git clone https://github.com/suyajun002/douyin2mp3.git
+git clone https://github.com/suyajun002/douyin2mp3.git   # 仓库 URL 暂未改名
 cd douyin2mp3
 open ios/Music/Music.xcodeproj
 ```
@@ -143,7 +143,7 @@ legacy/mac-agent/            早期方案：Mac 上常驻 agent + ffmpeg 出 MP3
 
 ## English
 
-**douyin2mp3** turns a Douyin (Chinese TikTok) share link into locally playable media on iPhone — entirely on-device.
+**Music** turns a Douyin (Chinese TikTok) share link into locally playable media on iPhone — entirely on-device.
 
 Most Douyin downloaders are CLI tools or self-hosted servers that need an always-on machine. This one is a native SwiftUI app with zero third-party dependencies: it extracts the link, handles the `ttwid` anti-bot cookie, parses the share page, resolves the watermark-free CDN URL, downloads the MP4 through a background `URLSession` (survives lock screen), and plays it with `AVPlayer` — including background audio and Now Playing controls. No server, no cloud, no LLM calls.
 

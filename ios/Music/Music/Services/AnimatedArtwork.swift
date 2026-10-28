@@ -43,12 +43,12 @@ enum AnimatedArtwork {
     /// 不节流是**故意**的：0.5 秒一轮正好能看出「封面实例是不是每轮都被换掉」，
     /// 那正是「动画起不来」的头号嫌疑。
     static func logWrite(_ key: String?) {
-        guard DouyinDebug.enabled else { return }
+        guard MusicDebug.enabled else { return }
         guard let key else {
-            DouyinDebug.log("动画封面：这一轮**没写**动画封面（资源缺 / key 不支持 / 已暂停）")
+            MusicDebug.log("动画封面：这一轮**没写**动画封面（资源缺 / key 不支持 / 已暂停）")
             return
         }
-        DouyinDebug.log("动画封面写入 key=\(key)"
+        MusicDebug.log("动画封面写入 key=\(key)"
                         + " preview=\(stillImage == nil ? "无" : "有")"
                         + " video=\(videoURL == nil ? "无" : "有")"
                         + " 省电=\(ProcessInfo.processInfo.isLowPowerModeEnabled)"
@@ -64,20 +64,20 @@ enum AnimatedArtwork {
     ///   · 调用了却还显示静态图 = 被**运行时条件**挡掉（省电模式、减弱动态效果……）
     /// 两者的修法完全不同，混在一起查会往错的方向改。
     static func diagnoseIfNeeded() {
-        guard DouyinDebug.enabled, !didDiagnose else { return }
+        guard MusicDebug.enabled, !didDiagnose else { return }
         didDiagnose = true
-        DouyinDebug.log("动画封面诊断：视频资源 = \(videoURL?.path ?? "未找到")")
-        DouyinDebug.log("动画封面诊断：静态图 = \(stillImage == nil ? "未找到" : "OK")")
+        MusicDebug.log("动画封面诊断：视频资源 = \(videoURL?.path ?? "未找到")")
+        MusicDebug.log("动画封面诊断：静态图 = \(stillImage == nil ? "未找到" : "OK")")
         if #available(iOS 26.0, *) {
             let supported = MPNowPlayingInfoCenter.supportedAnimatedArtworkKeys
-            DouyinDebug.log("动画封面诊断：平台支持的 key = \(supported)")
-            DouyinDebug.log("动画封面诊断：3x4 key 可用 = \(artworkKey != nil)")
+            MusicDebug.log("动画封面诊断：平台支持的 key = \(supported)")
+            MusicDebug.log("动画封面诊断：3x4 key 可用 = \(artworkKey != nil)")
         } else {
-            DouyinDebug.log("动画封面诊断：系统低于 iOS 26，API 不可用")
+            MusicDebug.log("动画封面诊断：系统低于 iOS 26，API 不可用")
         }
         // 这两条是文档里点名的「自动退回静态图」的触发条件。
         // 省电模式最容易被忽略 —— 它不影响别的任何功能，只悄悄关掉动画封面。
-        DouyinDebug.log("动画封面诊断：省电模式 = \(ProcessInfo.processInfo.isLowPowerModeEnabled)"
+        MusicDebug.log("动画封面诊断：省电模式 = \(ProcessInfo.processInfo.isLowPowerModeEnabled)"
                         + "，减弱动态效果 = \(UIAccessibility.isReduceMotionEnabled)")
     }
 
@@ -116,9 +116,9 @@ enum AnimatedArtwork {
             previewImageRequestHandler: { size in
                 // 预览图要尽快返回（头文件建议「理想情况下同步返回」），所以直接给缓存好的静帧，
                 // 让系统按需要缩放。
-                if DouyinDebug.enabled, !didLogPreview {
+                if MusicDebug.enabled, !didLogPreview {
                     didLogPreview = true
-                    DouyinDebug.log("动画封面：系统要预览图 \(Int(size.width))×\(Int(size.height))，"
+                    MusicDebug.log("动画封面：系统要预览图 \(Int(size.width))×\(Int(size.height))，"
                                     + (stillImage == nil ? "我们给不出" : "已给"))
                 }
                 return stillImage
@@ -126,9 +126,9 @@ enum AnimatedArtwork {
             videoAssetFileURLRequestHandler: { size in
                 // 这一行是**分水岭**：打出来了，说明系统真的采用了我们的封面；
                 // 一声不吭，说明是 key/资源没被接受，得回头查那两处。
-                if DouyinDebug.enabled, !didLogVideo {
+                if MusicDebug.enabled, !didLogVideo {
                     didLogVideo = true
-                    DouyinDebug.log("动画封面：系统要视频 \(Int(size.width))×\(Int(size.height))，"
+                    MusicDebug.log("动画封面：系统要视频 \(Int(size.width))×\(Int(size.height))，"
                                     + "我们给 1080×1440")
                 }
                 return videoURL

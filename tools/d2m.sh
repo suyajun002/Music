@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# d2m.sh —— douyin2mp3 的构建 / 安装 / 启动 / 截图 一条龙。
+# d2m.sh —— Music 的构建 / 安装 / 启动 / 截图 一条龙。
 #
 # 为什么要有这个脚本：这些命令以前散在 SKILL.md 的散文里，每次都要照着抄一遍，
 # 抄漏一个参数（比如 `D2M_APP_ID`、`DEVELOPMENT_TEAM`）就得到一个签名不对、
@@ -351,7 +351,7 @@ cmd_launch() {
 }
 
 # 挂在控制台上看日志。
-# ⚠️ 必须 --console 才能看到 App 里 DouyinDebug.log 的输出。
+# ⚠️ 必须 --console 才能看到 App 里 MusicDebug.log 的输出。
 # ⚠️ 这里会一直阻塞到进程退出；那些 D2M_* 自检开关就是配这里用的。
 #    远端模式下 ssh 会一直挂着，Ctrl-C 断的是 ssh 这头，**手机上那个 App 会继续跑** ——
 #    自检完记得再干净重启一次（`tools/d2m.sh launch`），别让自检参数留在手机上。

@@ -96,7 +96,7 @@ actor YouTubeExtractor: MediaExtracting {
 
         onStage("提交 Apify 任务", .at(0.04))
         let run = try await startRun(videoID: videoID, token: token)
-        DouyinDebug.log("YouTube \(videoID) → Apify run \(run.id)")
+        MusicDebug.log("YouTube \(videoID) → Apify run \(run.id)")
 
         // 这一步是黑盒：actor 在里面用住宅代理抓流、转码、传到自己的存储。
         // 没有字节级进度可报，只能报「等了多久」，所以 `fraction` 留 nil 走不确定进度条。
@@ -106,7 +106,7 @@ actor YouTubeExtractor: MediaExtracting {
             guard elapsed >= config.pollInterval else { return }
             onStage(Self.waitStage, FetchProgress(fraction: nil, attempt: "已等 \(Int(elapsed))s"))
         }
-        DouyinDebug.log("Apify run \(run.id) 完成，等了 \(Int(Date().timeIntervalSince(waited)))s")
+        MusicDebug.log("Apify run \(run.id) 完成，等了 \(Int(Date().timeIntervalSince(waited)))s")
 
         onStage("取结果", .at(0.5))
         let item = try await resultItem(run: run, videoID: videoID, token: token)
@@ -131,7 +131,7 @@ actor YouTubeExtractor: MediaExtracting {
         onStage("获取封面", .at(0.96))
         let artwork = await artworkData(for: item, videoID: videoID, token: token)
         if artwork == nil {
-            DouyinDebug.log("YouTube \(videoID) 封面获取失败，入库用占位图")
+            MusicDebug.log("YouTube \(videoID) 封面获取失败，入库用占位图")
         }
 
         onStage("保存到手机", .at(0.98))
@@ -156,7 +156,7 @@ actor YouTubeExtractor: MediaExtracting {
             guard let url = URL(string: raw) else { continue }
             if let data = try? await fetchImage(url, token: nil) { return data }
         }
-        DouyinDebug.log("YouTube \(videoID) 公开缩略图也没有取到")
+        MusicDebug.log("YouTube \(videoID) 公开缩略图也没有取到")
         return nil
     }
 
@@ -267,7 +267,7 @@ actor YouTubeExtractor: MediaExtracting {
                         detail?.isEmpty == false ? "\(status)：\(detail!)" : status
                     )
                 }
-                DouyinDebug.log("Apify run \(run.id) 状态 \(status)")
+                MusicDebug.log("Apify run \(run.id) 状态 \(status)")
                 return
             }
 
@@ -354,7 +354,7 @@ actor YouTubeExtractor: MediaExtracting {
         } catch let error as DownloadError where error.isUnauthorized {
             // Apify 存音频的地址可能要带 token 才让读。先按无凭证试一次，
             // 401/403 再补 `?token=` 重试 —— 顺带避免把 token 塞进每一次请求的 URL。
-            DouyinDebug.log("音频地址要凭证，补 token 重试")
+            MusicDebug.log("音频地址要凭证，补 token 重试")
             let signed = Self.appendingToken(to: audioURL, token: token)
             try await fetchFile(signed, to: destination, onProgress: onProgress)
         }

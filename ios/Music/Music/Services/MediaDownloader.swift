@@ -26,7 +26,7 @@ final class MediaDownloader: NSObject, URLSessionDownloadDelegate {
     static let shared = MediaDownloader()
 
     /// 后台会话标识：App 被系统拉起时用同一个标识重连未完成的下载。
-    static let sessionIdentifier = "com.yajun.douyin2mp3.media"
+    static let sessionIdentifier = "com.yajun.music.media"
 
     private struct Pending {
         let destination: URL

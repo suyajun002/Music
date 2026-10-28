@@ -47,22 +47,22 @@ struct ClipboardConfirmView: View {
         .task(id: prompt.id) {
             remaining = Self.countdownSeconds
             guard blockedReason == nil else {
-                DouyinDebug.log("确认框：这批下不了（\(blockedReason ?? "")），不自动下载")
+                MusicDebug.log("确认框：这批下不了（\(blockedReason ?? "")），不自动下载")
                 return
             }
             // 全都下过/正在下：倒计时走完也只会什么都不做，那就别数了。
             // 5 秒后「自动下载」一次、结果一条没动，比直接说明白更让人犯嘀咕。
             guard !status.nothingNew else {
-                DouyinDebug.log("确认框：\(status.total) 条都已在库或正在下载，不倒计时")
+                MusicDebug.log("确认框：\(status.total) 条都已在库或正在下载，不倒计时")
                 return
             }
-            DouyinDebug.log("确认框出现，开始 \(Self.countdownSeconds)s 倒计时（已在库 \(status.downloaded)，正在下 \(status.running)）")
+            MusicDebug.log("确认框出现，开始 \(Self.countdownSeconds)s 倒计时（已在库 \(status.downloaded)，正在下 \(status.running)）")
             while remaining > 0 {
                 try? await Task.sleep(for: .seconds(1))
                 if Task.isCancelled { return }
                 remaining -= 1
             }
-            DouyinDebug.log("剪贴板确认框倒计时到点，自动下载 \(prompt.urls.count) 条")
+            MusicDebug.log("剪贴板确认框倒计时到点，自动下载 \(prompt.urls.count) 条")
             onConfirm()
         }
     }
@@ -100,13 +100,13 @@ struct ClipboardConfirmView: View {
                     Button {
                         switch ringState {
                         case .blocked:
-                            DouyinDebug.log("确认框：点「去设置」，转去填 token")
+                            MusicDebug.log("确认框：点「去设置」，转去填 token")
                             onFix()
                         case .nothingNew:
-                            DouyinDebug.log("确认框：点「知道了」（这批都下过了）")
+                            MusicDebug.log("确认框：点「知道了」（这批都下过了）")
                             onIgnore()
                         case .counting:
-                            DouyinDebug.log("忽略按钮被触发")
+                            MusicDebug.log("忽略按钮被触发")
                             onIgnore()
                         }
                     } label: {

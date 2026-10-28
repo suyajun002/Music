@@ -4,7 +4,7 @@ import Foundation
 
 /// 诊断开关：`D2M_DEBUG=1` 时把取流关键量打到 stdout，
 /// 便于用 `devicectl device process launch --console` 在真机上看请求/下载细节。默认关闭。
-enum DouyinDebug {
+enum MusicDebug {
     static let enabled = ProcessInfo.processInfo.environment["D2M_DEBUG"] == "1"
 
     static func log(_ message: @autoclosure () -> String) {
@@ -98,7 +98,7 @@ actor DouyinExtractor: MediaExtracting {
     ) async throws -> ExtractedMedia {
         onStage("解析链接", .at(0.05))
         let videoID = try await resolveVideoID(from: url)
-        DouyinDebug.log("作品 ID \(videoID)")
+        MusicDebug.log("作品 ID \(videoID)")
 
         onStage("获取访问凭证", .at(0.10))
         await refreshCookies()
@@ -106,7 +106,7 @@ actor DouyinExtractor: MediaExtracting {
         onStage("解析作品信息", .at(0.16))
         let html = try await fetchShareHTML(videoID: videoID)
         let parsed = parseShareHTML(html)
-        DouyinDebug.log("share 页 \(html.count) 字节，uri=\(parsed.uri ?? "nil")，images=\(parsed.images.count)")
+        MusicDebug.log("share 页 \(html.count) 字节，uri=\(parsed.uri ?? "nil")，images=\(parsed.images.count)")
 
         if parsed.uri == nil {
             if !parsed.images.isEmpty { throw DouyinError.imageOnly }
@@ -209,7 +209,7 @@ actor DouyinExtractor: MediaExtracting {
             storeCookies(from: response, url: url, body: data)
         }
         lastCookieRefresh = Date()
-        DouyinDebug.log("Cookie 刷新完成，共 \(cookieJar.count) 项")
+        MusicDebug.log("Cookie 刷新完成，共 \(cookieJar.count) 项")
     }
 
     /// 同时解析响应头里的 Set-Cookie 与 URLSession Cookie 存储，尽量贴近脚本的 Cookie 池行为。
@@ -404,7 +404,7 @@ actor DouyinExtractor: MediaExtracting {
                 let label = "\(ratio)·线路\(line)"
                 do {
                     let cdn = try await cdnURL(uri: uri, ratio: ratio, line: line)
-                    DouyinDebug.log("试 \(label) → \(cdn.host ?? "-")")
+                    MusicDebug.log("试 \(label) → \(cdn.host ?? "-")")
                     // 先报一次，让界面显示「正在试哪个线路」，而不是原地停在 25%
                     onProgress(FetchProgress(fraction: 0.25, bytesWritten: 0, attempt: label))
                     try await download(cdn: cdn, to: destination) { progress in
@@ -412,14 +412,14 @@ actor DouyinExtractor: MediaExtracting {
                         tagged.attempt = label
                         // 每 50MB 打一条日志，足够定位又不会刷屏
                         if progress.bytesWritten / 1_048_576 % 50 == 0 {
-                            DouyinDebug.log("\(label) 已下 \(progress.bytesWritten / 1_048_576)MB")
+                            MusicDebug.log("\(label) 已下 \(progress.bytesWritten / 1_048_576)MB")
                         }
                         onProgress(tagged)
                     }
-                    DouyinDebug.log("\(label) 下载成功")
+                    MusicDebug.log("\(label) 下载成功")
                     return
                 } catch {
-                    DouyinDebug.log("\(label) 失败：\(error.localizedDescription)")
+                    MusicDebug.log("\(label) 失败：\(error.localizedDescription)")
                     lastError = error
                 }
             }

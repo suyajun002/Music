@@ -123,7 +123,7 @@ struct SettingsView: View {
         service.setApifyToken(trimmed)
         draft = ""
         verify = .idle
-        DouyinDebug.log("已保存 Apify token（\(trimmed.count) 字符）")
+        MusicDebug.log("已保存 Apify token（\(trimmed.count) 字符）")
     }
 
     private func runVerify() async {

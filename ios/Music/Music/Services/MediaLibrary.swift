@@ -83,7 +83,7 @@ final class MediaLibrary: ObservableObject {
         }
         if !sameFile.isEmpty {
             items.removeAll { $0.fileName == fileName && $0.id != videoID }
-            DouyinDebug.log("合并同文件条目 \(sameFile.count) 条 → \(videoID)")
+            MusicDebug.log("合并同文件条目 \(sameFile.count) 条 → \(videoID)")
         }
         let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? Int
 
@@ -233,7 +233,7 @@ final class MediaLibrary: ObservableObject {
             deletedLinks.removeLast(deletedLinks.count - Self.maxDeletedLinks)
         }
         persistDeletedLinks()
-        DouyinDebug.log("补齐历史删除记录 \(added) 条")
+        MusicDebug.log("补齐历史删除记录 \(added) 条")
     }
 
     private static func dedupeKey(of sourceURL: String?) -> String? {
@@ -372,7 +372,7 @@ final class MediaLibrary: ObservableObject {
             let stamp = Int(Date().timeIntervalSince1970)
             let backup = indexURL.appendingPathExtension("corrupt-\(stamp)")
             try? fileManager.moveItem(at: indexURL, to: backup)
-            DouyinDebug.log("索引解码失败，已留档 \(backup.lastPathComponent)，这次启动不写空索引")
+            MusicDebug.log("索引解码失败，已留档 \(backup.lastPathComponent)，这次启动不写空索引")
             return
         }
         items = decoded.filter { fileManager.fileExists(atPath: fileURL(for: $0).path) }
@@ -405,7 +405,7 @@ final class MediaLibrary: ObservableObject {
         }
         guard !droppedIDs.isEmpty else { return }
         items.removeAll { droppedIDs.contains($0.id) }
-        DouyinDebug.log("清理同文件重复条目 \(droppedIDs.count) 条")
+        MusicDebug.log("清理同文件重复条目 \(droppedIDs.count) 条")
         persist()
     }
 
@@ -437,7 +437,7 @@ final class MediaLibrary: ObservableObject {
         // 闸门：索引没读成功、而现在要写一份空的 —— 那多半是「解码失败后 items 被清空」
         // 的样子，不是用户真的把歌删光了，写下去就是抹记录。宁可这次不写（下次有内容了再写）。
         guard indexLoadedOK || !items.isEmpty else {
-            DouyinDebug.log("索引没读成功，且当前为空 —— 拒绝覆盖，保住磁盘上那份记录")
+            MusicDebug.log("索引没读成功，且当前为空 —— 拒绝覆盖，保住磁盘上那份记录")
             return
         }
         guard let data = try? JSONEncoder().encode(items) else { return }

@@ -97,7 +97,7 @@ final class ConversionService: ObservableObject {
     init() {
         // 上次被掐断的半截下载会堆在 tmp 里（实测到过 1GB+），启动先清干净
         let purged = MediaDownloader.purgeOrphanedTempFiles()
-        if purged > 0 { DouyinDebug.log("清理残留下载文件 \(purged) 个") }
+        if purged > 0 { MusicDebug.log("清理残留下载文件 \(purged) 个") }
 
         let library = MediaLibrary()
         let player = MediaPlayer()
@@ -124,7 +124,7 @@ final class ConversionService: ObservableObject {
     func setApifyToken(_ token: String?) {
         let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines)
         let changed = KeychainStore.set(trimmed, forKey: KeychainStore.apifyTokenKey)
-        if !changed { DouyinDebug.log("Apify token 写入钥匙串失败") }
+        if !changed { MusicDebug.log("Apify token 写入钥匙串失败") }
         hasApifyToken = !(trimmed?.isEmpty ?? true)
     }
 
@@ -153,7 +153,7 @@ final class ConversionService: ObservableObject {
         // 占位那条标题还是 UUID。所有转换任务名下的文件都不参与外部收录。
         let reserved = Set(jobs.compactMap(\.fileName))
         let adopted = await library.adoptExternalFiles(excluding: reserved)
-        if adopted > 0 { DouyinDebug.log("资料库收录外部文件 \(adopted) 个") }
+        if adopted > 0 { MusicDebug.log("资料库收录外部文件 \(adopted) 个") }
     }
 
     /// 给老 YouTube 条目补封面。之前入库只读 mp3 内嵌图，而 actor 的 mp3 没有内嵌图，
@@ -167,7 +167,7 @@ final class ConversionService: ObservableObject {
                 && isYouTube($0)
         }
         guard !missing.isEmpty else { return }
-        DouyinDebug.log("补封面：\(missing.count) 首 YouTube 缺封面")
+        MusicDebug.log("补封面：\(missing.count) 首 YouTube 缺封面")
 
         var consecutiveFailures = 0
         var fixed = 0
@@ -176,7 +176,7 @@ final class ConversionService: ObservableObject {
             guard let data = await youtube.artworkData(forVideoID: item.id) else {
                 consecutiveFailures += 1
                 if consecutiveFailures >= 3 {
-                    DouyinDebug.log("补封面：连续 3 首失败，先停下")
+                    MusicDebug.log("补封面：连续 3 首失败，先停下")
                     break
                 }
                 continue
@@ -187,7 +187,7 @@ final class ConversionService: ObservableObject {
                 if player.currentID == item.id { player.refreshArtwork() }
             }
         }
-        if fixed > 0 { DouyinDebug.log("补封面完成：\(fixed) 首") }
+        if fixed > 0 { MusicDebug.log("补封面完成：\(fixed) 首") }
     }
 
     private func isYouTube(_ item: MediaItem) -> Bool {
@@ -211,7 +211,7 @@ final class ConversionService: ObservableObject {
         // 启动时 `.task` 和 scenePhase 转 active 会各调一次；内容一样就别重弹，
         // 否则确认框会被推第二次、倒计时也跟着重来一遍。
         guard prompt.id != clipboardPrompt?.id else { return clipboardPrompt }
-        DouyinDebug.log("剪贴板识别到 \(urls.count) 条链接（\(prompt.sources.map(\.displayName).joined(separator: "、"))），弹确认框")
+        MusicDebug.log("剪贴板识别到 \(urls.count) 条链接（\(prompt.sources.map(\.displayName).joined(separator: "、"))），弹确认框")
         clipboardPrompt = prompt
         return prompt
     }
@@ -223,14 +223,14 @@ final class ConversionService: ObservableObject {
     func confirm(_ prompt: ClipboardPrompt) async -> SubmitOutcome {
         if clipboardPrompt?.id == prompt.id { clipboardPrompt = nil }
         let outcome = await enqueue(urls: prompt.urls)
-        DouyinDebug.log("确认框点下载：新入队 \(outcome.queued)，已在库 \(outcome.downloaded)，进行中 \(outcome.running)")
+        MusicDebug.log("确认框点下载：新入队 \(outcome.queued)，已在库 \(outcome.downloaded)，进行中 \(outcome.running)")
         clipboardOutcome = outcome
         return outcome
     }
 
     /// 用户在确认框里点了「忽略」。
     func dismissClipboardPrompt() {
-        DouyinDebug.log("确认框点忽略")
+        MusicDebug.log("确认框点忽略")
         clipboardPrompt = nil
     }
 
@@ -276,21 +276,21 @@ final class ConversionService: ObservableObject {
         guard let raw = ProcessInfo.processInfo.environment["D2M_YT_URL"],
               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
-        DouyinDebug.log("演示链接入队：\(raw)")
+        MusicDebug.log("演示链接入队：\(raw)")
         let first = await enqueue(from: raw)
-        DouyinDebug.log("演示链接第 1 次：新入队 \(first.queued)，已在库 \(first.downloaded)，正在下 \(first.running)，下过又删了 \(first.deleted.count)，不支持 \(first.unsupported)")
+        MusicDebug.log("演示链接第 1 次：新入队 \(first.queued)，已在库 \(first.downloaded)，正在下 \(first.running)，下过又删了 \(first.deleted.count)，不支持 \(first.unsupported)")
 
         let second = await enqueue(from: raw)
-        DouyinDebug.log("演示链接第 2 次（同一条，应全部被挡）：新入队 \(second.queued)，已在库 \(second.downloaded)，正在下 \(second.running)，下过又删了 \(second.deleted.count)，不支持 \(second.unsupported)")
+        MusicDebug.log("演示链接第 2 次（同一条，应全部被挡）：新入队 \(second.queued)，已在库 \(second.downloaded)，正在下 \(second.running)，下过又删了 \(second.deleted.count)，不支持 \(second.unsupported)")
         guard second.queued == 0 else {
-            DouyinDebug.log("去重自检：**失败**，同一条被重复提交了")
+            MusicDebug.log("去重自检：**失败**，同一条被重复提交了")
             return
         }
-        DouyinDebug.log("去重自检：通过，同一条没有重复提交")
+        MusicDebug.log("去重自检：通过，同一条没有重复提交")
 
         guard !first.deleted.isEmpty else { return }
         let forced = await redownload(first.deleted)
-        DouyinDebug.log("重下自检：要求重下 \(first.deleted.count) 条 → 新入队 \(forced.queued)"
+        MusicDebug.log("重下自检：要求重下 \(first.deleted.count) 条 → 新入队 \(forced.queued)"
             + (forced.queued == first.deleted.count ? "，通过" : "，**失败**（该下起来的没下）"))
     }
 
@@ -368,9 +368,9 @@ final class ConversionService: ObservableObject {
     /// 会重新问一次默认的那些规矩（正在下、已在库的照样挡），只是不再把 `.deleted` 当障碍。
     @discardableResult
     func redownload(_ urls: [URL]) async -> SubmitOutcome {
-        DouyinDebug.log("用户要求重下 \(urls.count) 条（下过又删了的那批）")
+        MusicDebug.log("用户要求重下 \(urls.count) 条（下过又删了的那批）")
         let outcome = await enqueue(urls: urls, redownloading: true)
-        DouyinDebug.log("重下结果：新入队 \(outcome.queued)，已在库 \(outcome.downloaded)，正在下 \(outcome.running)，不支持 \(outcome.unsupported)")
+        MusicDebug.log("重下结果：新入队 \(outcome.queued)，已在库 \(outcome.downloaded)，正在下 \(outcome.running)，不支持 \(outcome.unsupported)")
         return outcome
     }
 
@@ -540,7 +540,7 @@ final class ConversionService: ObservableObject {
         } catch {
             try? FileManager.default.removeItem(at: destination)
             let message = userFacingMessage(for: error)
-            DouyinDebug.log("任务失败：\(message)")
+            MusicDebug.log("任务失败：\(message)")
             update(jobID) { job in
                 job.state = .failed
                 job.stage = "失败"
@@ -563,9 +563,9 @@ final class ConversionService: ObservableObject {
         }
         jobs = restored
         if restored != loaded { history.save(restored) }
-        DouyinDebug.log("恢复转换记录 \(restored.count) 条（其中可重试失败 \(restored.filter { $0.state == .failed }.count) 条）")
+        MusicDebug.log("恢复转换记录 \(restored.count) 条（其中可重试失败 \(restored.filter { $0.state == .failed }.count) 条）")
         guard !autoRetryIDs.isEmpty else { return }
-        DouyinDebug.log("自动重试上次中断的任务 \(autoRetryIDs.count) 条")
+        MusicDebug.log("自动重试上次中断的任务 \(autoRetryIDs.count) 条")
         for jobID in autoRetryIDs {
             retry(jobID: jobID)
         }
