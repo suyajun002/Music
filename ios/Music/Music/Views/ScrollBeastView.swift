@@ -269,7 +269,7 @@ struct ScrollBeastView: View {
         }
     }
 
-    /// 播放时像唱盘一样一直转，暂停时补完当前这一圈停在正面。
+    /// 播放时在屏幕平面内整圈转（像陀螺），暂停时补完当前这一圈停在正面。
     private var creature: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !spin.isActive)) { context in
             ZStack {
@@ -289,12 +289,7 @@ struct ScrollBeastView: View {
             .offset(x: bodyShiftX + danceShiftX, y: danceLift)
             .rotationEffect(.degrees(bodyTilt), anchor: .top)
             .rotationEffect(.degrees(danceTilt), anchor: .bottom)
-            .rotation3DEffect(
-                .degrees(spin.angle(at: context.date)),
-                axis: (x: 0, y: 1, z: 0),
-                anchor: .bottom,
-                perspective: 0.55
-            )
+            .rotationEffect(.degrees(spin.angle(at: context.date)), anchor: .center)
         }
     }
 
@@ -616,7 +611,7 @@ struct ScrollBeastView: View {
 /// 结果是一帧都不转；`repeatForever` 动画也没法在暂停时停在当前角度。
 /// 这里按时间直接算角度，暂停时沿原方向补完这一圈，再停止刷新。
 private struct BeastSpin {
-    /// 15 秒一圈：比唱盘略快，52pt 的小玩偶才看得出在转。
+    /// 15 秒一圈：52pt 的小玩偶，再慢就看不出在转了。
     static let degreesPerSecond: Double = 360 / 15
 
     private var base: Double = 0
@@ -656,7 +651,7 @@ private struct BeastSpin {
         let current = base + date.timeIntervalSince(startedAt) * Self.degreesPerSecond
         self.startedAt = nil
         base = 0
-        // 2D 玩偶停在侧面会被压成一条线，所以补完这一圈回到正面。
+        // 停在半圈会一直倒着或斜着，所以补完这一圈回到正面。
         let facing = (current / 360).rounded(.up) * 360
         settle = facing - current < 0.5
             ? nil
