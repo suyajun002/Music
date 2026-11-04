@@ -29,13 +29,28 @@ struct ConvertView: View {
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                     }
-                } else {
+                } else if !visibleJobs.isEmpty {
                     Section {
-                        ForEach(service.jobs) { job in
+                        ForEach(visibleJobs) { job in
                             JobRow(job: job)
                         }
                         .onDelete { offsets in
-                            for index in offsets { service.remove(jobID: service.jobs[index].id) }
+                            for index in offsets { service.remove(jobID: visibleJobs[index].id) }
+                        }
+
+                        // 清除入口跟着记录走、贴着列表末尾：顶部不再常驻菜单。
+                        // 已完成不展示，所以这里只剩「清除失败」。
+                        if service.failedCount > 0 {
+                            Button {
+                                service.clearFailed()
+                            } label: {
+                                Label("清除失败（\(service.failedCount)）", systemImage: "trash")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                     } header: {
                         HStack(alignment: .firstTextBaseline) {
@@ -64,25 +79,12 @@ struct ConvertView: View {
         // 点空白/滚动就收起键盘，不该把人一直困在键盘页
         .scrollDismissesKeyboard(.immediately)
         .task(id: input) { await submitPasted() }
-        .toolbar {
-            // 清除入口放在常驻工具栏：以前藏在整张列表末尾，任务一多就永远看不到。
-            if service.completedCount + service.failedCount > 0 {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu("清除") {
-                        if service.completedCount > 0 {
-                            Button("清除已完成（\(service.completedCount)）") {
-                                service.clearCompleted()
-                            }
-                        }
-                        if service.failedCount > 0 {
-                            Button("清除失败（\(service.failedCount)）") {
-                                service.clearFailed()
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    }
+
+    /// 列表里要显示的记录。已完成的只留在磁盘上（启动时还要用它补「下过又删了」），
+    /// 不占页面位置 —— 所以「转换记录」只回答「现在在跑什么、哪条失败了」。
+    private var visibleJobs: [Job] {
+        service.jobs.filter { $0.state != .ready }
     }
 
     /// 输入条。做成音乐 App 搜索框的样子：灰色圆角、左侧图标、聚焦后直接粘贴。
@@ -153,7 +155,6 @@ struct ConvertView: View {
         if service.activeCount > 0 {
             parts.append("进行中 \(service.runningCount) · 等待 \(service.waitingCount)")
         }
-        if service.completedCount > 0 { parts.append("已完成 \(service.completedCount)") }
         if service.failedCount > 0 { parts.append("失败 \(service.failedCount)") }
         return parts.joined(separator: " · ")
     }

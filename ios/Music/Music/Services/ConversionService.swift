@@ -141,7 +141,6 @@ final class ConversionService: ObservableObject {
     var activeCount: Int { jobs.filter { $0.state.isActive }.count }
     var runningCount: Int { gate.running }
     var waitingCount: Int { gate.waitingCount }
-    var completedCount: Int { jobs.filter { $0.state == .ready }.count }
     var failedCount: Int { jobs.filter { $0.state == .failed }.count }
 
     /// 收录外部放进 Documents 的媒体文件（「文件」App 拖入、或 Mac 用 devicectl 推入）。
@@ -453,13 +452,7 @@ final class ConversionService: ObservableObject {
         return source.dedupeKey(for: url)
     }
 
-    /// 只清成功记录。失败记录留着 —— 它是一句话原因，用户可能还要看或重试。
-    func clearCompleted() {
-        jobs.removeAll { $0.state == .ready }
-        persistJobs()
-    }
-
-    /// 只清失败记录。和「清除已完成」分开，避免用户点一个按钮却顺手丢掉失败原因。
+    /// 只清失败记录。失败原因是一句话线索，清掉就没了，所以只在这一处动手。
     func clearFailed() {
         jobs.removeAll { $0.state == .failed }
         persistJobs()
