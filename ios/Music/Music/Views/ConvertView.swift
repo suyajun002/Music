@@ -23,46 +23,47 @@ struct ConvertView: View {
                     }
                 }
 
-                if service.jobs.isEmpty {
-                    Section {
-                        emptyState
+                // 标题常驻：没有记录时这一节也留着，下面就是空的。
+                Section {
+                    ForEach(service.jobs) { job in
+                        JobRow(job: job)
+                    }
+                    .onDelete { offsets in
+                        for index in offsets { service.remove(jobID: service.jobs[index].id) }
+                    }
+
+                    // 纯列表样式下「只有标题没有行」的 Section 会被折叠，
+                    // 用一个看不见的 1pt 行把标题撑住；视觉上仍是空的。
+                    if service.jobs.isEmpty {
+                        Color.clear
+                            .frame(height: 1)
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                     }
-                } else if !visibleJobs.isEmpty {
-                    Section {
-                        ForEach(visibleJobs) { job in
-                            JobRow(job: job)
-                        }
-                        .onDelete { offsets in
-                            for index in offsets { service.remove(jobID: visibleJobs[index].id) }
-                        }
 
-                        // 清除入口跟着记录走、贴着列表末尾：顶部不再常驻菜单。
-                        // 已完成不展示，所以这里只剩「清除失败」。
-                        if service.failedCount > 0 {
-                            Button {
-                                service.clearFailed()
-                            } label: {
-                                Label("清除失败（\(service.failedCount)）", systemImage: "trash")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                    // 清除入口贴着列表末尾：顶部不再常驻菜单。
+                    if service.failedCount > 0 {
+                        Button {
+                            service.clearFailed()
+                        } label: {
+                            Label("清除失败（\(service.failedCount)）", systemImage: "trash")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
-                    } header: {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text("转换记录")
-                            Spacer()
-                            if !recordSummary.isEmpty {
-                                Text(recordSummary)
-                                    .font(.caption)
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                                    .contentTransition(.numericText())
-                            }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("转换记录")
+                        Spacer()
+                        if !recordSummary.isEmpty {
+                            Text(recordSummary)
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .contentTransition(.numericText())
                         }
                     }
                 }
@@ -79,12 +80,6 @@ struct ConvertView: View {
         // 点空白/滚动就收起键盘，不该把人一直困在键盘页
         .scrollDismissesKeyboard(.immediately)
         .task(id: input) { await submitPasted() }
-    }
-
-    /// 列表里要显示的记录。已完成的只留在磁盘上（启动时还要用它补「下过又删了」），
-    /// 不占页面位置 —— 所以「转换记录」只回答「现在在跑什么、哪条失败了」。
-    private var visibleJobs: [Job] {
-        service.jobs.filter { $0.state != .ready }
     }
 
     /// 输入条。做成音乐 App 搜索框的样子：灰色圆角、左侧图标、聚焦后直接粘贴。
@@ -131,22 +126,6 @@ struct ConvertView: View {
                 .foregroundStyle(notice.isWarning ? Color.red : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "arrow.down.circle")
-                .font(.system(size: 36))
-                .foregroundStyle(.tertiary)
-            Text("还没有转换记录")
-                .font(.headline)
-            Text("粘贴链接后，下载进度和失败原因会出现在这里")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
     }
 
     /// 转换记录的一句话概况。只在页头出现，不占用每行的位置。
