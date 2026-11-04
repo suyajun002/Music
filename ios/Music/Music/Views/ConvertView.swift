@@ -23,10 +23,6 @@ struct ConvertView: View {
                     }
                 }
 
-                // 默认不自动重下（YouTube 一条一钱），但删过的条目要一直能找回来。
-                // 重下成功后由入库流程清掉这条记录；失败则原样留着，可以再点。
-                DeletedLinksSection(library: service.library)
-
                 if service.jobs.isEmpty {
                     Section {
                         emptyState
@@ -55,6 +51,11 @@ struct ConvertView: View {
                         }
                     }
                 }
+
+                // 放在转换记录之后：「正在发生/刚跑过的事」在上，历史删除的链接在下。
+                // 默认不自动重下（YouTube 一条一钱），但删过的条目要一直能找回来；
+                // 重下成功后由入库流程清掉这条记录，失败则原样留着，可以再点。
+                DeletedLinksSection(library: service.library)
         }
         .listStyle(.plain)
         .animation(.snappy, value: service.jobs.count)
