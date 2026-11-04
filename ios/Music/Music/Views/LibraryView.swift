@@ -158,13 +158,9 @@ struct LibraryView: View {
                     }
             }
             .sheet(isPresented: $showsConvert) {
+                // 不额外放「完成」：往下滑就能关，顶部只留转换页自己的「清除」。
                 NavigationStack {
                     ConvertView()
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("完成") { showsConvert = false }
-                            }
-                        }
                 }
                 .environmentObject(service)
                 .environmentObject(player)
