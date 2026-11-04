@@ -30,6 +30,8 @@ enum AudioTruncation {
     static let toleranceSeconds: Double = 5
     /// 允许的相对误差。短视频上 `toleranceSeconds` 占比过大，所以再压一道 90%。
     static let minimumRatio: Double = 0.9
+    /// 体积反推码流的下限比例。低于配置码流的 50% 就说明「时长说是整首、字节只有开头」。
+    static let minimumBitrateRatio: Double = 0.5
 
     /// - Parameters:
     ///   - expected: 源视频时长；nil 表示 actor 没给，此时不做判断（老结果兼容）。
@@ -39,5 +41,26 @@ enum AudioTruncation {
         guard let actual, actual > 0 else { return true }
         if expected - actual > toleranceSeconds { return true }
         return actual < expected * minimumRatio
+    }
+
+    /// 第二道独立校验：**体积反推的平均码流**。
+    ///
+    /// 只量时长有个盲点 —— MP3 的 Xing/Info 头可能写着整首的帧数，
+    /// 截断文件照样量出全长（实测把 8 MB 的整首砍到 500 KB，仍报 199 秒）。
+    /// 但字节数是骗不了人的：按 320k 编码，199 秒至少该有 8 MB，
+    /// 只有 0.4 MB 就意味着平均码流 2 kbps —— 残文件。
+    ///
+    /// - Parameters:
+    ///   - bytes: 落盘文件实际字节数。
+    ///   - expected: 源视频时长（秒）。
+    ///   - expectedBytesPerSecond: 本次配置应有的平均码流；<=0 时跳过这道校验。
+    static func isUnderBitrate(
+        bytes: Int64,
+        expected: Double?,
+        expectedBytesPerSecond: Double
+    ) -> Bool {
+        guard let expected, expected > 0, expectedBytesPerSecond > 0, bytes > 0 else { return false }
+        let implied = Double(bytes) / expected
+        return implied < expectedBytesPerSecond * minimumBitrateRatio
     }
 }

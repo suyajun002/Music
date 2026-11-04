@@ -53,6 +53,12 @@ struct YouTubeConfig {
     var audioFormat = "mp3"
     /// 320k 是 actor 的最高档，比公司自建服务那条链路的 192k 高一档。
     var audioBitrate = "320k"
+    /// 由 `audioBitrate` 推出的平均码流（字节/秒），给「体积反推码流」那道校验用。
+    /// 解析不出来就按 320k 算 —— 那是这里的默认档，也是最高档，宁可判严不判松。
+    var expectedBytesPerSecond: Double {
+        let digits = audioBitrate.lowercased().hasSuffix("k") ? audioBitrate.dropLast() : audioBitrate[...]
+        return (Double(digits) ?? 320) * 1000 / 8
+    }
     /// ⚠️ **必须显式指定住宅代理，不能让它自动选。**
     /// actor 的自动选择会落到数据中心代理，而 YouTube 直接封数据中心 IP ——
     /// 症状是「下载失败」，看起来像视频有问题，其实是代理选错了。
@@ -135,7 +141,11 @@ actor YouTubeExtractor: MediaExtracting {
 
         // actor 偶尔只落下开头几秒却报成功，入库前先按实测时长核对一遍。
         onStage("校验音频", .at(0.95))
-        try await verifyDuration(of: destination, expected: item.duration)
+        try await verifyDuration(
+            of: destination,
+            expected: item.duration,
+            expectedBytesPerSecond: config.expectedBytesPerSecond
+        )
 
         // actor 的结果里带缩略图；顺手取下来交给入库层写封面。
         // 取不到不影响下载成功，界面继续用来源色块占位。
@@ -401,14 +411,28 @@ actor YouTubeExtractor: MediaExtracting {
     /// actor 的「断线恢复」偶尔只把开头几秒传上来，仍报成功并照整首计费。
     /// 它的 `duration` 是源视频元数据，不能证明落盘文件完整，所以按实测时长兜底：
     /// 判定为残文件就删掉并报错，宁可让用户手动重试，也不能把断歌入库。
-    private func verifyDuration(of file: URL, expected: Double?) async throws {
+    private func verifyDuration(
+        of file: URL,
+        expected: Double?,
+        expectedBytesPerSecond: Double
+    ) async throws {
         guard let expected, expected > 0 else { return }
         let actual = await AudioDuration.seconds(at: file)
-        guard AudioTruncation.isTruncated(expected: expected, actual: actual) else { return }
         let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
         let bytes = (attributes?[.size] as? NSNumber)?.int64Value
+        let bitrateSuspicious = AudioTruncation.isUnderBitrate(
+            bytes: bytes ?? 0,
+            expected: expected,
+            expectedBytesPerSecond: expectedBytesPerSecond
+        )
+        guard AudioTruncation.isTruncated(expected: expected, actual: actual) || bitrateSuspicious else {
+            return
+        }
         try? FileManager.default.removeItem(at: file)
-        MusicDebug.log("YouTube 音频被截断：实测 \(actual ?? 0)s / 预期 \(expected)s，已删除")
+        MusicDebug.log(
+            "YouTube 音频被截断：实测 \(actual ?? 0)s / 预期 \(expected)s，"
+                + "\(bytes ?? 0) 字节，已删除"
+        )
         throw YouTubeError.truncated(actual: actual ?? 0, expected: expected, bytes: bytes)
     }
 
