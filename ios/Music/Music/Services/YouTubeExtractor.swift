@@ -15,6 +15,8 @@ enum YouTubeError: LocalizedError {
     case runFailed(String)
     case noAudio(String)
     case downloadRejected(String)
+    /// actor 报成功、但落盘文件只有开头一段。带上实测/预期时长与体积，让用户看懂为什么被丢掉。
+    case truncated(actual: Double, expected: Double, bytes: Int64?)
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +26,11 @@ enum YouTubeError: LocalizedError {
         case .runFailed(let detail): return "Apify 任务失败：\(detail)"
         case .noAudio(let detail): return "这条没取到音频：\(detail)"
         case .downloadRejected(let detail): return "音频下载失败：\(detail)"
+        case .truncated(let actual, let expected, let bytes):
+            let got = String(format: "%.0f", actual)
+            let want = String(format: "%.0f", expected)
+            let size = bytes.map { String(format: "，%.1f MB", Double($0) / 1024 / 1024) } ?? ""
+            return "只取到 \(got) 秒\(size)，原曲约 \(want) 秒：文件不完整已丢弃，重试会重新计费"
         }
     }
 }
@@ -125,6 +132,10 @@ actor YouTubeExtractor: MediaExtracting {
                 bytesWritten: progress.bytesWritten
             ))
         }
+
+        // actor 偶尔只落下开头几秒却报成功，入库前先按实测时长核对一遍。
+        onStage("校验音频", .at(0.95))
+        try await verifyDuration(of: destination, expected: item.duration)
 
         // actor 的结果里带缩略图；顺手取下来交给入库层写封面。
         // 取不到不影响下载成功，界面继续用来源色块占位。
@@ -289,6 +300,10 @@ actor YouTubeExtractor: MediaExtracting {
         var audioFileURL: URL?
         var thumbnailFileURL: URL?
         var thumbnailYoutubeURL: URL?
+        /// 源视频时长（秒）。用来在下载后核对落盘文件是不是只有开头一段。
+        var duration: Double?
+        /// actor 报的体积，仅用于日志和报错文案；权威大小以落盘文件为准。
+        var fileSize: Int64?
         /// 失败原因：actor 的 `status` 或 `error`，都没有就是 nil。
         var status: String?
 
@@ -297,9 +312,22 @@ actor YouTubeExtractor: MediaExtracting {
             audioFileURL = ResultItem.httpURL(json["audioFileUrl"] as? String)
             thumbnailFileURL = ResultItem.httpURL(json["thumbnailFileUrl"] as? String)
             thumbnailYoutubeURL = ResultItem.httpURL(json["thumbnailYoutubeUrl"] as? String)
+            duration = ResultItem.number(json["duration"])
+            fileSize = ResultItem.number(json["fileSize"]).map { Int64($0) }
             let status = json["status"] as? String
             let error = json["error"] as? String
             self.status = status ?? error
+        }
+
+        /// actor 的数值字段有时是整数、有时是小数，个别版本还会给字符串。
+        /// 统一收成 Double，避免 `as? Double` 在整数上写起来像能用、实际靠桥接碰运气。
+        static func number(_ raw: Any?) -> Double? {
+            if let value = raw as? NSNumber { return value.doubleValue }
+            if let text = raw as? String {
+                let trimmed = text.trimmingCharacters(in: .whitespaces)
+                return trimmed.isEmpty ? nil : Double(trimmed)
+            }
+            return nil
         }
 
         /// 只认 http(s) 的绝对地址。`URL(string:)` 很宽容，空白串会变成一个相对 URL，
@@ -368,6 +396,20 @@ actor YouTubeExtractor: MediaExtracting {
             try? FileManager.default.removeItem(at: destination)
             throw YouTubeError.downloadRejected("下载内容不是有效音频")
         }
+    }
+
+    /// actor 的「断线恢复」偶尔只把开头几秒传上来，仍报成功并照整首计费。
+    /// 它的 `duration` 是源视频元数据，不能证明落盘文件完整，所以按实测时长兜底：
+    /// 判定为残文件就删掉并报错，宁可让用户手动重试，也不能把断歌入库。
+    private func verifyDuration(of file: URL, expected: Double?) async throws {
+        guard let expected, expected > 0 else { return }
+        let actual = await AudioDuration.seconds(at: file)
+        guard AudioTruncation.isTruncated(expected: expected, actual: actual) else { return }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
+        let bytes = (attributes?[.size] as? NSNumber)?.int64Value
+        try? FileManager.default.removeItem(at: file)
+        MusicDebug.log("YouTube 音频被截断：实测 \(actual ?? 0)s / 预期 \(expected)s，已删除")
+        throw YouTubeError.truncated(actual: actual ?? 0, expected: expected, bytes: bytes)
     }
 
     private func fetchFile(

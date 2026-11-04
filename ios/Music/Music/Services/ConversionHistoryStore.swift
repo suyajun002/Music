@@ -1,5 +1,5 @@
 // 用途：转换记录持久化。重启/发布后仍能保留失败原因并直接重试；
-// 上次没跑完的任务在下次启动时标成「已中断」，每条记录只自动重试一次。
+// 上次没跑完的任务在下次启动时标成「已中断」，免费来源自动重试一次，付费来源一律等用户确认。
 import Foundation
 
 struct ConversionHistoryStore {
@@ -78,16 +78,22 @@ struct ConversionHistoryStore {
             restored.progressUnknown = false
             restored.downloadedBytes = 0
             restored.attempt = nil
-            restored.error = "App 重启或发布时下载中断，可重试"
+            restored.error = restored.source.isPaid
+                ? "上次下载中断（YouTube 走付费接口，重试会重新计费）"
+                : "App 重启或发布时下载中断，可重试"
             return restored
         }
     }
 
     /// 上次启动时还没跑完、且没自动重试过的记录。返回 id 是因为调用方还要按原顺序
     /// 把它们重新入队；这里只负责判断「谁该自动重试」，不碰并发闸门。
+    ///
+    /// **付费来源不参与自动重试**：一次重试就是一次新的 Apify run，会再扣一次钱；
+    /// 而且第二次 run 更容易踩到 actor 的断线恢复 bug（只给开头几秒）。这种必须让用户
+    /// 自己点重试，手动重试那条有费用确认。
     static func interruptedJobsToAutoRetry(_ jobs: [Job]) -> [String] {
         normalized(jobs, limit: maxRecords)
-            .filter { $0.state.isActive && !$0.autoRetried }
+            .filter { $0.state.isActive && !$0.autoRetried && !$0.source.isPaid }
             .map(\.id)
     }
 
