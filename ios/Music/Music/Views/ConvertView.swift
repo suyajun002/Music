@@ -214,6 +214,8 @@ struct ConvertView: View {
 /// 不在这里直接观察它，重下成功清掉记录后这一节不会立刻从页面消失。
 private struct DeletedLinksSection: View {
     @ObservedObject var library: MediaLibrary
+    @EnvironmentObject private var service: ConversionService
+    @State private var confirmsClear = false
 
     var body: some View {
         if !library.deletedLinks.isEmpty {
@@ -221,8 +223,30 @@ private struct DeletedLinksSection: View {
                 ForEach(library.deletedLinks) { link in
                     DeletedLinkRow(link: link)
                 }
+                .onDelete { offsets in
+                    // 先取出快照再删：边删边按下标取会越界（集合已经变短了）。
+                    let links = offsets.map { library.deletedLinks[$0] }
+                    // 单条删除走 service：删记录的同时把它的转换记录也带走，
+                    // 否则下次启动 `backfillDeletedLinks` 会照着旧记录再补一条回来。
+                    for link in links { service.forgetDeletedLink(link) }
+                }
             } header: {
-                Text("下过又删了")
+                HStack(alignment: .firstTextBaseline) {
+                    Text("下过又删了")
+                    Spacer()
+                    Button("清空（\(library.deletedLinks.count)）") { confirmsClear = true }
+                        .font(.caption)
+                        .textCase(nil)
+                        .buttonStyle(.borderless)
+                }
+            }
+            .confirmationDialog(
+                "清空后这些链接会被当成没下过：再贴进来会直接重新下载，YouTube 会重新计费。",
+                isPresented: $confirmsClear,
+                titleVisibility: .visible
+            ) {
+                Button("清空", role: .destructive) { service.clearDeletedLinks() }
+                Button("取消", role: .cancel) {}
             }
         }
     }

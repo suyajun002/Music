@@ -75,7 +75,7 @@ struct LibraryView: View {
                                     // 加不了第二项。
                                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                         Button(role: .destructive) {
-                                            service.library.delete(item)
+                                            service.delete(item)
                                         } label: {
                                             Label("删除", systemImage: "trash")
                                         }

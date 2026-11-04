@@ -200,6 +200,23 @@ final class MediaLibrary: ObservableObject {
         if deletedLinks.count != before { persistDeletedLinks() }
     }
 
+    /// 一键清空「下过又删了」。**这是让 App 忘掉这些链接下过**：清完之后再贴同一条
+    /// 会被当成新链接直接排队下载（付费来源会重新计费），所以调用方必须先让用户确认。
+    func clearDeletedLinks() {
+        guard !deletedLinks.isEmpty else { return }
+        let before = deletedLinks.count
+        deletedLinks.removeAll()
+        persistDeletedLinks()
+        MusicDebug.log("清空删除记录 \(before) 条")
+    }
+
+    /// 删掉单条删除记录。语义同 `clearDeletedLinks`，只是范围小一条。
+    func forgetDeletedLink(_ link: DeletedLink) {
+        let before = deletedLinks.count
+        deletedLinks.removeAll { $0.sourceURL == link.sourceURL }
+        if deletedLinks.count != before { persistDeletedLinks() }
+    }
+
     /// 补齐「删除记录」功能上线前删掉的条目：转换记录里仍是完成态、库里已经没有
     /// 这个文件、也没有删除记录时，用任务里的来源补一条。
     /// **只补显示，不自动下载** —— YouTube 仍然要用户点「重新下载」并确认费用。

@@ -97,6 +97,24 @@ struct ConversionHistoryStore {
             .map(\.id)
     }
 
+    /// 哪些记录该跟着「某几条链接被清理」一起消失。
+    ///
+    /// 判定只看两点：**同一去重键**、**不在跑**。正在排队/下载的任务不动 —— 那是此刻
+    /// 的真实状态，清历史不该把它从界面上抹掉；跑完自然变成正常记录。
+    /// `keyFor` 由调用方注入，是为了让这段逻辑能脱离 `MediaSource` 单独单测。
+    static func jobIDsToDropRelating(
+        to keys: Set<String>,
+        in jobs: [Job],
+        keyFor: (String) -> String?
+    ) -> Set<String> {
+        guard !keys.isEmpty else { return [] }
+        return Set(jobs.filter { job in
+            guard !job.state.isActive else { return false }
+            guard let key = keyFor(job.sourceURL) else { return false }
+            return keys.contains(key)
+        }.map(\.id))
+    }
+
     /// 去重、丢掉没有可用链接的记录、限制条数。保持原有顺序（新任务在前）。
     private static func normalized(_ jobs: [Job], limit: Int) -> [Job] {
         var seen = Set<String>()

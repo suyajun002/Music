@@ -409,6 +409,50 @@ final class ConversionService: ObservableObject {
         persistJobs()
     }
 
+    /// 从资料库删一首。文件、封面、索引由 `MediaLibrary.delete` 处理；这里把转换记录里
+    /// 同一链接的「已保存」条一起清掉 —— 否则列表里会留一条点不动的「已保存」，
+    /// 而「下过又删了」那边已经承载了同一件事。
+    func delete(_ item: MediaItem) {
+        let rawSources = [item.sourceURL].compactMap { $0 }
+        library.delete(item)
+        dropHistory(relatingTo: rawSources)
+    }
+
+    /// 一键清空「下过又删了」，顺带清掉转换记录里指向这些链接的记录。
+    /// 清完之后这些链接等于「没下过」：再贴会直接排队下载，YouTube 会重新计费，
+    /// 所以调用方必须先让用户确认。
+    func clearDeletedLinks() {
+        let rawSources = library.deletedLinks.map(\.sourceURL)
+        library.clearDeletedLinks()
+        dropHistory(relatingTo: rawSources)
+    }
+
+    /// 删掉单条「下过又删了」，同样清掉它的转换记录。
+    func forgetDeletedLink(_ link: DeletedLink) {
+        library.forgetDeletedLink(link)
+        dropHistory(relatingTo: [link.sourceURL])
+    }
+
+    /// 按去重键把「跟这几条链接同源、且不在跑」的转换记录剔掉。
+    /// 在跑的任务不动 —— 它是此刻的真实状态，不该被清历史顺手抹掉。
+    private func dropHistory(relatingTo rawSources: [String]) {
+        let keys = Set(rawSources.compactMap { Self.dedupeKey(of: $0) })
+        let dropped = ConversionHistoryStore.jobIDsToDropRelating(to: keys, in: jobs) { sourceURL in
+            Self.dedupeKey(of: sourceURL)
+        }
+        guard !dropped.isEmpty else { return }
+        jobs.removeAll { dropped.contains($0.id) }
+        persistJobs()
+        MusicDebug.log("清掉关联转换记录 \(dropped.count) 条")
+    }
+
+    private static func dedupeKey(of sourceURL: String?) -> String? {
+        guard let sourceURL, let url = URL(string: sourceURL),
+              let source = MediaSource.of(url)
+        else { return nil }
+        return source.dedupeKey(for: url)
+    }
+
     /// 只清成功记录。失败记录留着 —— 它是一句话原因，用户可能还要看或重试。
     func clearCompleted() {
         jobs.removeAll { $0.state == .ready }
