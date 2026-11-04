@@ -452,9 +452,11 @@ final class ConversionService: ObservableObject {
         return source.dedupeKey(for: url)
     }
 
-    /// 只清失败记录。失败原因是一句话线索，清掉就没了，所以只在这一处动手。
-    func clearFailed() {
-        jobs.removeAll { $0.state == .failed }
+    /// 清空转换记录：已保存和失败的都清掉，**正在排队/下载的不动** ——
+    /// 那是此刻真实在跑的任务，抹掉会让用户以为任务丢了。
+    /// 只清历史，不碰资料库里的歌。
+    func clearHistory() {
+        jobs.removeAll { !$0.state.isActive }
         persistJobs()
     }
 

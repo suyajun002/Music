@@ -5,6 +5,7 @@ struct ConvertView: View {
     @EnvironmentObject private var service: ConversionService
     @State private var input = ""
     @State private var outcome: SubmitOutcome?
+    @State private var confirmsClearRecords = false
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -41,19 +42,6 @@ struct ConvertView: View {
                             .listRowBackground(Color.clear)
                     }
 
-                    // 清除入口贴着列表末尾：顶部不再常驻菜单。
-                    if service.failedCount > 0 {
-                        Button {
-                            service.clearFailed()
-                        } label: {
-                            Label("清除失败（\(service.failedCount)）", systemImage: "trash")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
                 } header: {
                     HStack(alignment: .firstTextBaseline) {
                         Text("转换记录")
@@ -64,6 +52,12 @@ struct ConvertView: View {
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                                 .contentTransition(.numericText())
+                        }
+                        if hasClearableRecords {
+                            Button("清空") { confirmsClearRecords = true }
+                                .font(.caption)
+                                .textCase(nil)
+                                .buttonStyle(.borderless)
                         }
                     }
                 }
@@ -77,6 +71,14 @@ struct ConvertView: View {
         .animation(.snappy, value: service.jobs.count)
         .animation(.snappy, value: service.jobs.map(\.state))
         .navigationTitle("转视频")
+        .confirmationDialog(
+            "清空转换记录？已保存和失败的记录都会消失，资料库里的歌不受影响，正在下载的不动。",
+            isPresented: $confirmsClearRecords,
+            titleVisibility: .visible
+        ) {
+            Button("清空", role: .destructive) { service.clearHistory() }
+            Button("取消", role: .cancel) {}
+        }
         // 点空白/滚动就收起键盘，不该把人一直困在键盘页
         .scrollDismissesKeyboard(.immediately)
         .task(id: input) { await submitPasted() }
@@ -126,6 +128,11 @@ struct ConvertView: View {
                 .foregroundStyle(notice.isWarning ? Color.red : Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// 有没有可以清掉的记录。正在下载/排队的任务不算 —— 清空不该把它们从页面上抹掉。
+    private var hasClearableRecords: Bool {
+        service.jobs.contains { !$0.state.isActive }
     }
 
     /// 转换记录的一句话概况。只在页头出现，不占用每行的位置。
