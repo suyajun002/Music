@@ -57,6 +57,10 @@ struct MediaItem: Codable, Identifiable, Equatable {
     /// 来源链接。用于「粘贴即下载」时判断这条是否已经下过，避免重复下载。
     /// 老索引里没有这个字段，解码为 nil，只是无法参与去重。
     var sourceURL: String?
+    /// 入库时从原标题识别出的歌手 / 歌名。识别到就用它去搜歌词，
+    /// 老条目没有这两个字段，解码为 nil，回退到原标题。
+    var artist: String? = nil
+    var trackTitle: String? = nil
 
     var durationText: String {
         guard let durationSec, durationSec > 0 else { return "--:--" }

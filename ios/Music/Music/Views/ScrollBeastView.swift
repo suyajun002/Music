@@ -164,10 +164,10 @@ struct ScrollBeastView: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: Self.barHeight)
-        .onChange(of: controller.actionToken) { _, _ in
+        .onChange(of: controller.actionToken) { _ in
             perform(controller.action)
         }
-        .onChange(of: controller.direction) { _, direction in
+        .onChange(of: controller.direction) { direction in
             settleMood(direction)
         }
         .onDisappear {

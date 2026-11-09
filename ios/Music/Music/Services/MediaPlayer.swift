@@ -41,6 +41,8 @@ final class MediaPlayer: ObservableObject {
     @Published var isExpanded = false
 
     let player = AVPlayer()
+    /// 歌词：播放页要全量，锁屏/灵动岛的「正在播放」只能借副标题位显示当前这一句。
+    let lyrics = LyricsStore()
     private var timeObserver: Any?
     /// 盯住 AVPlayer 的真实播放状态：暂停/播完/被系统中断都由它纠正按钮，避免图标和实际不符。
     private var statusObservation: NSKeyValueObservation?
@@ -351,12 +353,15 @@ final class MediaPlayer: ObservableObject {
         currentTitle = item.title
         elapsed = 0
         duration = item.durationSec ?? 0
+        Task { await lyrics.load(id: item.id, title: item.title, duration: item.durationSec ?? 0) }
         artwork = artworkLoader(item).flatMap { UIImage(contentsOfFile: $0.path) }
         currentKind = item.kind
         showsVideo = item.kind.hasPicture
         player.play()
         isPlaying = true
         updateNowPlaying()
+        PlayIntentLog.write("start playing \(item.title)")
+        MediaIntentDonation.donatePlayback(of: item)
         if restoringPosition { restorePosition(for: item) } else { applyIntroSkip(for: item) }
     }
 
@@ -898,9 +903,18 @@ private func finishAtTrim() {
 
     private func updateNowPlaying() {
         guard currentID != nil else { return }
+        // 副标题位（`Artist`）原来是占位 "Music"，现在放「当前这一句歌词」——
+        // 锁屏卡片和灵动岛展开态都只有这一个副标题位，系统卡没有多行歌词的接口。
+        // 前奏还没到第一句（自动平移后可能长达几十秒）就退回歌手，再不行才是占位，
+        // 不让卡片在这段时间显示一句还没唱的词。
+        let subtitle: String = {
+            if let line = lyrics.line(at: elapsed) { return line }
+            if let artist = currentItem?.artist, !artist.isEmpty { return artist }
+            return "Music"
+        }()
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: currentTitle,
-            MPMediaItemPropertyArtist: "Music",
+            MPMediaItemPropertyArtist: subtitle,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
         ]
@@ -920,13 +934,17 @@ private func finishAtTrim() {
         let animated = isPlaying ? AnimatedArtwork.sharedIfAvailable() : nil
         let animatedKey = animated == nil ? nil : AnimatedArtwork.artworkKey
 
-        // 用户定的是「封面**只要萌宠**」——那就别再把真封面同时交上去。
-        // 两个都在时系统会自己挑一个（实测挑的是真封面那张静态图），
-        // 把静态那份拿掉，能交的就只剩动画封面了。
+        // 静态封面**必须一直给**：Apple 文档写的是「动画封面会替代静态封面显示，
+        // 取不到时系统回退到静态图」。之前播放中把静态那份拿掉，等于把回退路径也删了
+        // —— 省电模式、减弱动态效果、首帧还没就绪时，锁屏/灵动岛就是一个空白方块。
+        //
+        // 封面用**歌曲自己的封面**。萌宠动画封面由 `AnimatedArtwork.isEnabled` 控制，
+        // 关着的时候这里就是系统看到的唯一封面。
+        let fallbackArtwork = artwork
+        if let fallbackArtwork {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: fallbackArtwork.size) { _ in fallbackArtwork }
+        }
         if animatedKey == nil {
-            if let artwork {
-                info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
-            }
             AnimatedArtwork.diagnoseIfNeeded()
         }
         if let animated, let animatedKey {

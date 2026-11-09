@@ -28,9 +28,16 @@ enum AnimatedArtwork {
     private static let stillName = "cat-still"
 
     private static let videoURL: URL? = Bundle.main.url(forResource: videoName, withExtension: "mp4")
-    private static let stillImage: UIImage? = Bundle.main
+    /// 动画封面取不到时系统回退用的静帧（锁屏/灵动岛共用这一张）。
+    static let stillImage: UIImage? = Bundle.main
         .url(forResource: stillName, withExtension: "png")
         .flatMap { UIImage(contentsOfFile: $0.path) }
+
+    /// 是否把萌宠作为「正在播放」封面交给系统。
+    ///
+    /// 关掉时锁屏/灵动岛的封面用**歌曲封面**。一份 `nowPlayingInfo` 只有一个封面身份，
+    /// 动画封面会把静态封面整个顶掉，两者不能兼得，所以只能二选一。
+    static let isEnabled = false
 
     /// 只打一次诊断，避免 0.5 秒一轮的 `updateNowPlaying` 把日志刷爆。
     private static var didDiagnose = false
@@ -92,7 +99,7 @@ enum AnimatedArtwork {
     /// 不带 `@available` 的入口：调用点（`updateNowPlaying`）在 iOS 18 下也要能编译，
     /// 版本判断收在这里做。返回 `Any?` 是因为调用点不能出现 iOS 26 的类型名。
     static func sharedIfAvailable() -> Any? {
-        guard #available(iOS 26.0, *) else { return nil }
+        guard isEnabled, #available(iOS 26.0, *) else { return nil }
         return shared()
     }
 

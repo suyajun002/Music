@@ -82,6 +82,13 @@ final class ConversionService: ObservableObject {
     let library: MediaLibrary
     let player: MediaPlayer
 
+    /// 当前 App 的实例。Siri / Shortcuts 的媒体 Intent 由 AppDelegate 处理，
+    /// 那里拿不到 SwiftUI 的 `@StateObject`，只能从这里取同一个播放器。
+    static weak var current: ConversionService?
+    /// 真单例。后台被 intent 唤起时 SwiftUI 的 App 还没构造，
+    /// `current` 是空的，只能靠它按需建出唯一实例。
+    static let shared = ConversionService()
+
     /// 两个来源，两条完全不同的链路：抖音在手机上自己抓，YouTube 把活外包给 Apify。
     private let douyin = DouyinExtractor()
     private let youtube = YouTubeExtractor()
@@ -107,6 +114,7 @@ final class ConversionService: ObservableObject {
         )
         self.library = library
         self.player = player
+        MediaIntentDonation.reportLibraryContext(itemCount: library.items.count)
         self.hasApifyToken = KeychainStore.string(forKey: KeychainStore.apifyTokenKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
@@ -118,6 +126,8 @@ final class ConversionService: ObservableObject {
         restoreHistory()
         // 删除记录功能上线前删掉的条目没有 DeletedLink；能从完成态任务里补回来。
         library.backfillDeletedLinks(from: jobs)
+        Self.current = self
+        PlayIntentLog.write("app init, items=\(library.items.count)")
     }
 
     /// 换 Apify token。存钥匙串、立刻生效，不用重启 —— 取流那边每次调用现读。
@@ -477,8 +487,7 @@ final class ConversionService: ObservableObject {
     }
 
     /// 从资料库点某一首：以整库为队列，从这首开始播。
-    /// 不自动展开全屏播放页——保持列表可见，只在底部出现迷你播放条；
-    /// 想看大封面/视频画面时再点迷你条展开（和音乐 App 的手感一致）。
+    /// 这里只负责播放；是否进入全屏播放页由列表入口决定。
     func play(_ item: MediaItem) {
         let items = library.items
         let index = items.firstIndex { $0.id == item.id } ?? 0

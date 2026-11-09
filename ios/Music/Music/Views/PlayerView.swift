@@ -1,10 +1,13 @@
-// 用途：全屏「正在播放」（对齐音乐 App：大封面、剩余时间、上一首/下一首、音量与 AirPlay）。
+// 用途：全屏「正在播放」：歌词为主体，底色跟随封面着色，保留进度与播放控件。
+import Combine
 import SwiftUI
 
 struct PlayerView: View {
     @EnvironmentObject private var service: ConversionService
     @EnvironmentObject private var player: MediaPlayer
     @Environment(\.dismiss) private var dismiss
+    @State private var showsLyrics = true
+    @State private var palette = ArtworkPalette.fallback
 
     private var item: MediaItem? {
         guard let id = player.currentID else { return nil }
@@ -12,25 +15,39 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        ZStack {
+            PlayerBackdrop(palette: palette)
 
-            Spacer(minLength: 8)
+            VStack(spacing: 0) {
+                header
 
-            stage
-                .padding(.horizontal, 28)
+                Spacer(minLength: 8)
 
-            Spacer(minLength: 16)
+                stage
+                    .padding(.horizontal, 28)
 
-            titleBlock
-            scrubber
-            transport
-            modeRow
-            volumeRow
+                Spacer(minLength: 16)
 
-            Spacer(minLength: 12)
+                titleBlock
+                scrubber
+                transport
+                modeRow
+                volumeRow
+
+                Spacer(minLength: 12)
+            }
+            .padding(.bottom, 8)
         }
-        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onReceive(player.$artwork) { artwork in
+            guard let artwork else { return }
+            withAnimation(.easeInOut(duration: 0.45)) {
+                palette = ArtworkPalette.from(artwork)
+            }
+        }
+        .onChange(of: player.currentID) { _ in
+            showsLyrics = true
+        }
     }
 
     // MARK: - 区块
@@ -50,16 +67,23 @@ struct PlayerView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            // 音频没有画面可切，留个等宽占位保持标题居中。
-            if item?.isAudio != true {
+            if player.currentHasPicture {
                 Button {
-                    player.showsVideo.toggle()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        if showsLyrics {
+                            player.showsVideo = true
+                            showsLyrics = false
+                        } else {
+                            showsLyrics = true
+                        }
+                    }
                 } label: {
-                    Image(systemName: player.showsVideo ? "music.note" : "play.rectangle")
+                    Image(systemName: showsLyrics ? "play.rectangle" : "quote.bubble")
                         .font(.body)
                         .frame(width: 32, height: 32)
                 }
                 .disabled(item == nil)
+                .accessibilityLabel(showsLyrics ? "显示视频" : "显示歌词")
             } else {
                 Color.clear.frame(width: 32, height: 32)
             }
@@ -70,14 +94,58 @@ struct PlayerView: View {
 
     @ViewBuilder
     private var stage: some View {
-        if player.showsVideo {
+        if showsLyrics || !player.currentHasPicture {
+            lyricsStage
+        } else {
             VideoSurface(player: player.player)
                 .aspectRatio(16 / 9, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        } else {
-            ArtworkView(url: item.flatMap { service.library.artworkURL(for: $0) }, size: 300, corner: 12)
-                .frame(maxWidth: .infinity)
-                .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
+        }
+    }
+
+    /// 歌词占满主区域。加载中和「没找到」都在这块里说清楚，
+    /// 不弹窗、不占额外区域。
+    @ViewBuilder
+    private var lyricsStage: some View {
+        LyricsStage(store: player.lyrics, elapsed: player.elapsed) { time in
+            player.seek(toSeconds: time)
+        }
+    }
+
+    /// 单独一层是为了用 `@ObservedObject` 盯住 `player.lyrics`。`LyricsStore` 是
+    /// `MediaPlayer` 的嵌套对象，外层 `player` 发通知不会带上它，直接在 `PlayerView`
+    /// 里读状态会停在「加载中」直到下一次 `elapsed` 变化。
+    private struct LyricsStage: View {
+        @ObservedObject var store: LyricsStore
+        let elapsed: TimeInterval
+        let seek: (TimeInterval) -> Void
+
+        var body: some View {
+            Group {
+                switch store.state {
+                case .idle, .loading:
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .ready(let value):
+                    LyricsView(
+                        lyrics: value,
+                        elapsed: elapsed,
+                        delay: store.delay,
+                        onSeek: seek
+                    )
+                case .unavailable:
+                    VStack(spacing: 10) {
+                        Image(systemName: "quote.bubble")
+                            .font(.largeTitle)
+                            .foregroundStyle(.tertiary)
+                        Text("没有找到这首歌的歌词")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

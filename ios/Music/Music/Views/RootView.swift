@@ -13,7 +13,7 @@ struct RootView: View {
 
     var body: some View {
         LibraryView(showsSettings: $showsSettings)
-        .sheet(isPresented: Binding(
+        .fullScreenCover(isPresented: Binding(
             get: { player.isExpanded },
             set: { player.isExpanded = $0 }
         )) {
@@ -26,7 +26,11 @@ struct RootView: View {
                 .environmentObject(player)
         }
         .overlay { clipboardConfirm }
-        .onChange(of: scenePhase) { _, phase in
+        .task {
+            // 统一修复已有歌曲的歌词：缺的补、纯文本升级、旧时间轴重取。
+            await LyricsSync.repairAll(items: service.library.items)
+        }
+        .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:
                 // 音频只出封面；视频回前台恢复画面
@@ -58,6 +62,7 @@ struct RootView: View {
             }
             await service.adoptExternalMedia()
             player.resumeLastPlayback(from: service.library.items)
+            playRequestedItemIfAny()
             // 老 YouTube 条目没有内嵌封面：后台补，不挡续播。
             Task { await service.backfillArtworkIfNeeded() }
             await player.runJumpDemoIfRequested()
@@ -80,6 +85,18 @@ struct RootView: View {
         ProcessInfo.processInfo.environment["D2M_SKIP_CLIPBOARD"] == "1"
 #else
         false
+#endif
+    }
+
+    /// 真机验证用：`D2M_PLAY=<标题片段>` 时直接开播并打开播放页。
+    /// 走的是和用户点列表完全一样的 `play(item:)`，不另开一条播放路径。
+    private func playRequestedItemIfAny() {
+#if DEBUG
+        guard let needle = ProcessInfo.processInfo.environment["D2M_PLAY"], !needle.isEmpty,
+              let item = service.library.items.first(where: { $0.title.contains(needle) }) else { return }
+        MusicDebug.log("调试：按 D2M_PLAY 开播《\(item.title.prefix(24))》")
+        player.play(item: item)
+        player.isExpanded = true
 #endif
     }
 

@@ -13,6 +13,18 @@ private enum LibraryLayout {
     static let artworkSize: CGFloat = 52
 }
 
+private enum LibraryScrollOffset {
+    static let space = "library-scroll"
+}
+
+private struct LibraryScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct LibraryView: View {
     @EnvironmentObject private var service: ConversionService
     @EnvironmentObject private var player: MediaPlayer
@@ -58,14 +70,21 @@ struct LibraryView: View {
         VStack(spacing: 0) {
                 Group {
                     if service.library.items.isEmpty {
-                        ContentUnavailableView(
-                            "资料库是空的",
-                            systemImage: "music.note.list",
-                            description: Text("点底部玩偶打开「转视频」贴一条链接下载，或把音频/视频文件放进 App 的「文件」目录，都会自动出现在这里")
-                        )
+                        LibraryEmptyState()
                     } else {
                         List {
                         Section {
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: LibraryScrollOffsetKey.self,
+                                    value: -proxy.frame(in: .named(LibraryScrollOffset.space)).minY
+                                )
+                            }
+                            .frame(height: 0)
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+
                             ForEach(items) { item in
                                 row(item)
                                     // 首屏 10 首。底部控制条占 52pt，行高保持约 78pt。
@@ -99,9 +118,9 @@ struct LibraryView: View {
                         // 歌单容器铺满屏幕宽度：不做 iOS 26 inset-grouped 的圆角卡片，列表直接内嵌在页面里。
                         .listStyle(.plain)
                         // 去掉 List 默认的内容上边距；顶部只留安全区，也就是灵动岛本身的距离。
-                        .contentMargins(.top, -20, for: .scrollContent)
-                        .listSectionSpacing(0)
+                        .libraryListInsets()
                         .scrollContentBackground(.hidden)
+                        .coordinateSpace(name: LibraryScrollOffset.space)
                         .background {
                             TopBackdrop()
                                 .ignoresSafeArea()
@@ -113,9 +132,7 @@ struct LibraryView: View {
                                 .frame(height: 10)
                                 .allowsHitTesting(false)
                         }
-                        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                            geometry.contentOffset.y
-                        } action: { _, offset in
+                        .onPreferenceChange(LibraryScrollOffsetKey.self) { offset in
                             beast.consume(offset: offset)
                         }
                     }
@@ -425,6 +442,7 @@ struct LibraryView: View {
     private func row(_ item: MediaItem) -> some View {
         Button {
             service.play(item)
+            player.isExpanded = true
         } label: {
             HStack(spacing: 12) {
                 ArtworkView(
@@ -477,4 +495,38 @@ struct LibraryView: View {
             : String(format: "%.0f MB", Double(bytes) / 1024 / 1024)
     }
 
+}
+
+private struct LibraryEmptyState: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "music.note.list")
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary)
+            Text("资料库是空的")
+                .font(.title3.weight(.semibold))
+            Text("点底部玩偶打开「转视频」贴一条链接下载，或把音频/视频文件放进 App 的「文件」目录，都会自动出现在这里")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, ScrollBeastView.barHeight)
+    }
+}
+
+private extension View {
+    /// iOS 16 没有 `contentMargins` / `listSectionSpacing`。旧系统保留 List 默认边距，
+    /// 只牺牲一点顶部留白，不为了视觉一致去改列表结构。
+    @ViewBuilder
+    func libraryListInsets() -> some View {
+        if #available(iOS 17.0, *) {
+            self
+                .contentMargins(.top, -20, for: .scrollContent)
+                .listSectionSpacing(0)
+        } else {
+            self
+        }
+    }
 }

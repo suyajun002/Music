@@ -32,6 +32,7 @@ final class MediaLibrary: ObservableObject {
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         load()
         loadDeletedLinks()
+        backfillIdentity()
     }
 
     func fileURL(for item: MediaItem) -> URL {
@@ -87,20 +88,42 @@ final class MediaLibrary: ObservableObject {
         }
         let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? Int
 
+        let resolved = await Self.resolvedTitle(explicit: title, fileName: fileName, url: url)
+        // 入库时就识别歌手/歌名：下载环节已经知道真实时长，正好用它挑同版本的歌词。
+        let identity = LyricsProvider.identify(resolved)
         let item = MediaItem(
             id: videoID,
-            title: await Self.resolvedTitle(explicit: title, fileName: fileName, url: url),
+            title: resolved,
             fileName: fileName,
             artworkFileName: artworkName,
             sizeBytes: size,
             durationSec: await Self.duration(of: url),
             savedAt: Date(),
-            sourceURL: sourceURL
+            sourceURL: sourceURL,
+            artist: identity.artist,
+            trackTitle: identity.track
         )
         items.insert(item, at: 0)
         // 又下回来了：这条链接的「下过又删了」记录就没用了，留着反而会让下次贴它被多挡一次
         forgetDeletedLinks(matching: sourceURL)
         persist()
+        // 不 await：歌词抓取失败不能把「已保存到手机」拖成失败。
+        Task { await LyricsSync.prepare(for: item) }
+    }
+
+    /// 老条目入库时还没有识别歌手/歌名，启动时补一遍（纯本地，不联网）。
+    /// 只处理 `trackTitle` 为空的：识别不出来的会写入削过噪声的歌名，下次不再重试。
+    private func backfillIdentity() {
+        var changed = false
+        for index in items.indices where items[index].trackTitle == nil {
+            let identity = LyricsProvider.identify(items[index].title)
+            if items[index].artist != identity.artist || items[index].trackTitle != identity.track {
+                items[index].artist = identity.artist
+                items[index].trackTitle = identity.track
+                changed = true
+            }
+        }
+        if changed { persist() }
     }
 
     /// 后补封面（YouTube 老条目启动时从缩略图补）。只补空封面，不覆盖已有的。

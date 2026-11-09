@@ -18,3 +18,6 @@ node_modules/
 # 本机构建归档
 build-archive/
 build-release/
+
+# 本机临时构建目录
+build-*/
