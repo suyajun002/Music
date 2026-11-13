@@ -8,6 +8,7 @@ enum SettingsRoute: Hashable {
 
 struct SettingsView: View {
     @EnvironmentObject private var service: ConversionService
+    @EnvironmentObject private var player: MediaPlayer
     @Environment(\.dismiss) private var dismiss
     @State private var path: [SettingsRoute]
 
@@ -19,6 +20,7 @@ struct SettingsView: View {
     /// 而且这一栏的语义本来就清楚 —— 「填了就覆盖，留空不动」。
     @State private var draft = ""
     @State private var verify = VerifyState.idle
+    @AppStorage(LoudnessStore.enabledKey) private var loudnessNormalization = true
 
     private enum VerifyState: Equatable {
         case idle
@@ -31,6 +33,8 @@ struct SettingsView: View {
         NavigationStack(path: $path) {
             Form {
                 youtubeSection
+                audioEffectSection
+                loudnessSection
                 downloadSection
             }
             .navigationTitle("设置")
@@ -135,6 +139,54 @@ struct SettingsView: View {
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             verify = .failed(message)
+        }
+    }
+
+    // MARK: - 音效
+
+    private var audioEffectSection: some View {
+        Section {
+            Picker("音效", selection: Binding(
+                get: { player.audioEffectID ?? "" },
+                set: { player.setAudioEffect(id: $0.isEmpty ? nil : $0) }
+            )) {
+                Text("关闭（原声）").tag("")
+                ForEach(AudioEffectPresets.all) { preset in
+                    Text(preset.name).tag(preset.id)
+                }
+            }
+            if let current = AudioEffectPresets.preset(id: player.audioEffectID) {
+                Text(current.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("音效")
+        } footer: {
+            Text("""
+            在解码后的音频上做处理（MTAudioProcessingTap），视频画面、锁屏、后台播放都不受影响。
+
+            预设是数据（Resources/effectPresets.json），引擎按配置组装模块：EQ → 谐波激励 → 饱和 → 展宽 → 环境声 → 低频限幅 → 响度护栏。
+            """)
+        }
+    }
+
+    // MARK: - 音量均衡
+
+    private var loudnessSection: some View {
+        Section {
+            Toggle("音量均衡", isOn: $loudnessNormalization)
+                .onChange(of: loudnessNormalization) { _ in
+                    player.refreshLoudness()
+                }
+        } header: {
+            Text("音量")
+        } footer: {
+            Text("""
+            按每首歌实测的整曲响度（EBU R128）统一到 -14 LUFS，避免老歌、串烧和单曲之间差十几个 dB。
+
+            只调整这一首的整体增益，不压缩动态；已下载的老歌会在后台补测。
+            """)
         }
     }
 

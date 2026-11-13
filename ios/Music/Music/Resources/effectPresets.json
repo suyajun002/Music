@@ -1,0 +1,313 @@
+{
+  "version": 1,
+  "note": "音效预设。加一套只改这个文件，不用动 Swift 代码。参数来源：build/fx-demo/render.sh 里 ffmpeg 离线验证过的那组，并在真歌上量过频段变化。",
+  "presets": [
+    {
+      "id": "bassBoost",
+      "name": "超重低音",
+      "subtitle": "澎湃低音带来更多震撼",
+      "modules": [
+        {
+          "type": "rumbleCut",
+          "freq": 28
+        },
+        {
+          "type": "eq",
+          "bands": [
+            {
+              "type": "lowShelf",
+              "freq": 85,
+              "gain": 10,
+              "slope": 1.0
+            }
+          ]
+        },
+        {
+          "type": "harmonics",
+          "cutoff": 120,
+          "driveDb": 16,
+          "weight": 0.5,
+          "highPass": 100
+        },
+        {
+          "type": "gain",
+          "db": -1.4
+        }
+      ]
+    },
+    {
+      "id": "clearVocal",
+      "name": "清澈人声",
+      "subtitle": "更具穿透力的人声体验",
+      "modules": [
+        {
+          "type": "eq",
+          "bands": [
+            {
+              "type": "peaking",
+              "freq": 280,
+              "gain": -4,
+              "q": 1.0
+            },
+            {
+              "type": "peaking",
+              "freq": 2800,
+              "gain": 4.5,
+              "q": 1.2
+            },
+            {
+              "type": "highShelf",
+              "freq": 9000,
+              "gain": 2,
+              "slope": 1.0
+            }
+          ]
+        },
+        {
+          "type": "gain",
+          "db": -1.0
+        }
+      ]
+    },
+    {
+      "id": "rock",
+      "name": "摇滚音效",
+      "subtitle": "再现饱含激情音乐节奏",
+      "modules": [
+        {
+          "type": "eq",
+          "bands": [
+            {
+              "type": "peaking",
+              "freq": 120,
+              "gain": -2,
+              "q": 1.0
+            },
+            {
+              "type": "peaking",
+              "freq": 800,
+              "gain": -3,
+              "q": 1.0
+            },
+            {
+              "type": "peaking",
+              "freq": 2500,
+              "gain": 4.5,
+              "q": 1.0
+            }
+          ]
+        },
+        {
+          "type": "saturation",
+          "driveDb": 10,
+          "mix": 1.0
+        },
+        {
+          "type": "gain",
+          "db": -2.0
+        }
+      ]
+    },
+    {
+      "id": "vinyl",
+      "name": "复古唱片",
+      "subtitle": "复古怀旧年代感来袭",
+      "modules": [
+        {
+          "type": "eq",
+          "bands": [
+            {
+              "type": "highPass",
+              "freq": 100
+            },
+            {
+              "type": "lowPass",
+              "freq": 7000
+            },
+            {
+              "type": "peaking",
+              "freq": 2500,
+              "gain": 1,
+              "q": 1.0
+            }
+          ]
+        },
+        {
+          "type": "width",
+          "amount": 0.6
+        },
+        {
+          "type": "noise",
+          "levelDb": -32,
+          "lowPass": 9000
+        },
+        {
+          "type": "saturation",
+          "driveDb": 3,
+          "mix": 1.0
+        }
+      ]
+    },
+    {
+      "id": "hall",
+      "name": "HIFI现场",
+      "subtitle": "亲临最 high 音乐现场（真实 IR 卷积）",
+      "modules": [
+        {
+          "type": "convolver",
+          "ir": "hall_ir.wav",
+          "mix": 0.42
+        },
+        {
+          "type": "eq",
+          "bands": [
+            {
+              "type": "highShelf",
+              "freq": 8000,
+              "gain": 2,
+              "slope": 1.0
+            }
+          ]
+        },
+        {
+          "type": "gain",
+          "db": -1.0
+        }
+      ]
+    },
+    {
+      "id": "edm",
+      "name": "动感电音",
+      "subtitle": "独具一格电子音乐风格",
+      "modules": [
+        {
+          "type": "eq",
+          "bands": [
+            {
+              "type": "lowShelf",
+              "freq": 80,
+              "gain": 7,
+              "slope": 1.0
+            },
+            {
+              "type": "peaking",
+              "freq": 12000,
+              "gain": 4,
+              "q": 1.0
+            }
+          ]
+        },
+        {
+          "type": "harmonics",
+          "cutoff": 2000,
+          "driveDb": 8,
+          "weight": 0.4,
+          "highPass": 2000
+        },
+        {
+          "type": "width",
+          "amount": 1.6
+        },
+        {
+          "type": "gain",
+          "db": -3.0
+        }
+      ]
+    },
+    {
+      "id": "spatial3D",
+      "name": "3D 音效",
+      "subtitle": "足不出户享受现场",
+      "modules": [
+        {
+          "type": "width",
+          "amount": 1.3
+        },
+        {
+          "type": "ambience",
+          "delaysMs": [
+            15,
+            27
+          ],
+          "feedback": 0.3,
+          "mix": 0.25
+        },
+        {
+          "type": "saturation",
+          "driveDb": 2,
+          "mix": 1.0
+        },
+        {
+          "type": "gain",
+          "db": -2.0
+        }
+      ]
+    },
+    {
+      "id": "surround360",
+      "name": "360 环绕",
+      "subtitle": "多角度超大声场体验",
+      "modules": [
+        {
+          "type": "width",
+          "amount": 1.35
+        },
+        {
+          "type": "ambience",
+          "delaysMs": [
+            11,
+            19,
+            31
+          ],
+          "feedback": 0.35,
+          "mix": 0.3
+        },
+        {
+          "type": "gain",
+          "db": -2.0
+        }
+      ]
+    },
+    {
+      "id": "smart",
+      "name": "智能音效",
+      "subtitle": "跟随曲风智能适配（按频谱自动倾斜）",
+      "modules": [
+        {
+          "type": "adaptiveTilt",
+          "minDb": -3.0,
+          "maxDb": 4.0,
+          "updateSec": 2.0
+        },
+        {
+          "type": "eq",
+          "bands": [
+            {
+              "type": "lowShelf",
+              "freq": 90,
+              "gain": 2,
+              "slope": 1.0
+            },
+            {
+              "type": "peaking",
+              "freq": 3000,
+              "gain": 1.5,
+              "q": 1.0
+            }
+          ]
+        },
+        {
+          "type": "harmonics",
+          "cutoff": 6000,
+          "driveDb": 6,
+          "weight": 0.25,
+          "highPass": 6000
+        },
+        {
+          "type": "gain",
+          "db": -1.0
+        }
+      ]
+    }
+  ]
+}

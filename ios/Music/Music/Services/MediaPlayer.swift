@@ -39,6 +39,9 @@ final class MediaPlayer: ObservableObject {
     @Published var showsVideo = true
     /// 是否展开全屏「正在播放」。
     @Published var isExpanded = false
+    /// 当前音效预设 id（nil = 关）。预设本身是数据（Resources/effectPresets.json），
+    /// 引擎按 id 组装模块链 —— 加一套音效只改 JSON，不动代码、不发版。
+    @Published private(set) var audioEffectID: String?
 
     let player = AVPlayer()
     /// 歌词：播放页要全量，锁屏/灵动岛的「正在播放」只能借副标题位显示当前这一句。
@@ -48,6 +51,8 @@ final class MediaPlayer: ObservableObject {
     private var statusObservation: NSKeyValueObservation?
     private var artworkLoader: @MainActor (MediaItem) -> URL? = { _ in nil }
     private var fileResolver: @MainActor (MediaItem) -> URL = { _ in URL(fileURLWithPath: "/dev/null") }
+    /// 每次重建 audioMix 自增；异步取完音轨后用它挡掉过期的挂载。
+    private var mixGeneration = 0
 
     /// 队列的**原始顺序**（就是资料库给的那份，不随随机播放变动）。
     private var queue: [MediaItem] = []
@@ -66,6 +71,10 @@ final class MediaPlayer: ObservableObject {
         // 现象就是「关了 App 再开，锁屏上的随机是高亮的，但 App 里是顺序」，
         // 或者更糟：用户点了随机、锁屏却还显示顺序，看起来像「随机没生效」。
         mode = Self.loadMode()
+        // `D2M_AUDIO_FX=1`（或 `=预设id`）让命令行启动时直接带音效，省得真机上手动点。
+        // 手机没法从命令行点 UI，这个 App 里其他验证（跳转/模式/试听演示）也是这个套路。
+        let env = ProcessInfo.processInfo.environment["D2M_AUDIO_FX"]
+        audioEffectID = (env == "1" ? "bassBoost" : env) ?? UserDefaults.standard.string(forKey: Self.audioEffectKey)
         configureSession()
         addTimeObserver()
         observePlaybackStatus()
@@ -236,6 +245,104 @@ final class MediaPlayer: ObservableObject {
         play(items: [item], startIndex: 0)
     }
 
+    // MARK: - 音效
+
+    private static let audioEffectKey = "audioEffect.presetID"
+
+    /// 切音效。立刻对**当前这首**生效，不用重放：挂/摘 audioMix 都允许在播放中做。
+    func setAudioEffect(id: String?) {
+        guard id != audioEffectID else { return }
+        audioEffectID = id
+        UserDefaults.standard.set(id, forKey: Self.audioEffectKey)
+        if id == nil {
+            MusicDebug.log("音效：已关掉（恢复原声）")
+        }
+        refreshLoudness()
+    }
+
+    /// 用户改「音量均衡」开关后立刻对当前这首生效，不用重放。
+    func refreshLoudness() {
+        guard let media = currentItem,
+              let item = player.currentItem,
+              let asset = item.asset as? AVURLAsset else { return }
+        refreshAudioMix(on: item, asset: asset, media: media, fileURL: fileResolver(media))
+    }
+
+    /// 给这一条挂上音效和/或响度增益。
+    ///
+    /// 两处必须异步/二次校验：
+    /// 1. **取音轨是 async**：iOS 16 起 `tracks(withMediaType:)` 是弃用接口，会阻塞主线程。
+    /// 2. **加载完要确认还是同一首**：取音轨这几十毫秒里用户可能已经切歌，
+    ///    把 mix 挂到旧 item 上等于白做，还会让日志说"挂上了"但耳朵没变。
+    private func refreshAudioMix(
+        on playerItem: AVPlayerItem,
+        asset: AVURLAsset,
+        media: MediaItem,
+        fileURL: URL
+    ) {
+        mixGeneration += 1
+        let generation = mixGeneration
+
+        let preset = AudioEffectPresets.preset(id: audioEffectID)
+        let gainDB = LoudnessStore.shared.gainDB(for: media, fileURL: fileURL)
+
+        if preset == nil, gainDB == nil {
+            playerItem.audioMix = nil
+            return
+        }
+        if preset == nil, let gainDB, abs(gainDB) < 0.05 {
+            playerItem.audioMix = nil
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .audio)
+                guard let track = tracks.first else {
+                    MusicDebug.log("音频混合：这首没有音轨，跳过")
+                    return
+                }
+                guard self.mixGeneration == generation, self.player.currentItem === playerItem else {
+                    MusicDebug.log("音频混合：音轨加载完时已经切歌，丢掉这次的 mix")
+                    return
+                }
+
+                let params = AVMutableAudioMixInputParameters(track: track)
+                if let preset {
+                    let tap = AudioEffectTap.make(preset: preset, extraGainDB: gainDB ?? 0)
+                    params.audioTapProcessor = tap
+                    // tap 创建失败时，至少把“只衰减”的那部分用 audioMix 兜住。
+                    if tap == nil, let gainDB, gainDB < 0 {
+                        params.setVolume(Self.safeVolume(forDB: gainDB), at: .zero)
+                    }
+                    let extra = gainDB.map { String(format: "，响度 %+.1f dB", $0) } ?? ""
+                    MusicDebug.log("音效：\(preset.name)已挂上《\(self.currentTitle)》\(extra)")
+                } else if let gainDB, gainDB > 0 {
+                    guard let tap = NormalizationTap.make(gainDB: gainDB) else {
+                        MusicDebug.log("响度：提升 tap 没装上，这首按原声放")
+                        return
+                    }
+                    params.audioTapProcessor = tap
+                    MusicDebug.log("响度：《\(self.currentTitle)》提升 \(String(format: "%+.1f", gainDB))dB")
+                } else if let gainDB {
+                    params.setVolume(Self.safeVolume(forDB: gainDB), at: .zero)
+                    MusicDebug.log("响度：《\(self.currentTitle)》压低 \(String(format: "%+.1f", gainDB))dB")
+                }
+
+                let mix = AVMutableAudioMix()
+                mix.inputParameters = [params]
+                playerItem.audioMix = mix
+            } catch {
+                MusicDebug.log("音频混合：取音轨失败 \(error.localizedDescription)，这首按原声放")
+            }
+        }
+    }
+
+    private static func safeVolume(forDB db: Float) -> Float {
+        min(1, max(0, LoudnessGain.linearGain(forDB: db)))
+    }
+
     // MARK: - 收听位置存档
 
     /// 上次放的是哪首。放在 UserDefaults 而不是资料库里：这是「播放器状态」，跟媒体文件本身无关。
@@ -348,7 +455,13 @@ final class MediaPlayer: ObservableObject {
         // `preview()` 是在 `play()` **之后**才挂上区间的，所以这里清不会误伤它。
         previewRange = nil
 
-        player.replaceCurrentItem(with: AVPlayerItem(url: fileResolver(item)))
+        let fileURL = fileResolver(item)
+        let asset = AVURLAsset(url: fileURL)
+        let playerItem = AVPlayerItem(asset: asset)
+        player.replaceCurrentItem(with: playerItem)
+        refreshAudioMix(on: playerItem, asset: asset, media: item, fileURL: fileURL)
+        // 老条目还没测过就后台补测；下一次播放就会带上增益。
+        Task { await LoudnessStore.shared.analyzeIfNeeded(id: item.id, url: fileURL) }
         currentID = item.id
         currentTitle = item.title
         elapsed = 0

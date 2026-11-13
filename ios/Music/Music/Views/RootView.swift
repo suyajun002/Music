@@ -35,7 +35,10 @@ struct RootView: View {
             case .active:
                 // 音频只出封面；视频回前台恢复画面
                 player.showsVideo = player.currentHasPicture
-                Task { await service.adoptExternalMedia() }
+                Task {
+                    await service.adoptExternalMedia()
+                    await service.backfillLoudnessIfNeeded()
+                }
                 // 从抖音复制完链接切回来，正是「识别剪贴板」最自然的时机。
                 // 剪贴板没换过内容就不会读、也不会弹系统授权框（见 ClipboardReader）。
                 if !clipboardCheckDisabled {
@@ -61,6 +64,7 @@ struct RootView: View {
                 showsSettings = true
             }
             await service.adoptExternalMedia()
+            Task { await service.backfillLoudnessIfNeeded() }
             player.resumeLastPlayback(from: service.library.items)
             playRequestedItemIfAny()
             // 老 YouTube 条目没有内嵌封面：后台补，不挡续播。

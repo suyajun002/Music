@@ -199,6 +199,13 @@ final class ConversionService: ObservableObject {
         if fixed > 0 { MusicDebug.log("补封面完成：\(fixed) 首") }
     }
 
+    /// 老条目的响度测量：启动/回前台时补，不挡播放。新下载在入库后单独触发。
+    func backfillLoudnessIfNeeded() async {
+        await LoudnessStore.shared.backfill(items: library.items) { item in
+            library.fileURL(for: item)
+        }
+    }
+
     private func isYouTube(_ item: MediaItem) -> Bool {
         guard let raw = item.sourceURL, let url = URL(string: raw) else { return false }
         return MediaSource.of(url) == .youtube
@@ -572,6 +579,10 @@ final class ConversionService: ObservableObject {
             }
 
             let item = library.items.first { $0.id == result.videoID }
+            if let item {
+                let url = library.fileURL(for: item)
+                Task { await LoudnessStore.shared.analyzeIfNeeded(id: item.id, url: url) }
+            }
             update(jobID) { job in
                 job.state = .ready
                 job.stage = "已保存到手机"
