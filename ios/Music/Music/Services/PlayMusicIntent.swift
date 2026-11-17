@@ -40,21 +40,7 @@ struct ShuffleMusicIntent: AudioStartingIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         PlayIntentLog.write("shuffle intent enter")
-        let service = ConversionService.current ?? ConversionService.shared
-        PlayIntentLog.write("shuffle intent service ready")
-
-        let player = service.player
-        let items = service.library.items
-        PlayIntentLog.write("shuffle intent items=\(items.count)")
-        guard !items.isEmpty else { return .result() }
-
-        player.setMode(.shuffle)
-        if player.currentID == nil {
-            player.play(items: items, startIndex: 0)
-        } else {
-            PlayIntentLog.write("shuffle intent resume")
-            player.play()
-        }
+        MusicQuickAction.shufflePlay()
         return .result()
     }
 }

@@ -17,6 +17,17 @@
 	<array>
 		<string>INPlayMediaIntent</string>
 	</array>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemType</key>
+			<string>com.yajun.douyin2mp3.shuffle</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>随机播放音乐</string>
+			<key>UIApplicationShortcutItemIconType</key>
+			<string>UIApplicationShortcutIconTypePlay</string>
+		</dict>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
