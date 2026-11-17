@@ -7,6 +7,7 @@ import AppIntents
 struct PlayMusicIntent: AudioStartingIntent {
     static var title: LocalizedStringResource = "播放音乐"
     static var description = IntentDescription("在 Music 中播放资料库里的音乐")
+    static var openAppWhenRun = false
 
     @MainActor
     func perform() async throws -> some IntentResult {
@@ -28,6 +29,36 @@ struct PlayMusicIntent: AudioStartingIntent {
     }
 }
 
+/// 快捷指令 / Siri 专用的随机播放入口。
+/// 和「继续播放」分开，避免用户已经暂停在中途时被强制切歌；
+/// 已有当前歌曲时只切到随机模式并继续，没有当前歌曲时从资料库随机起播。
+struct ShuffleMusicIntent: AudioStartingIntent {
+    static var title: LocalizedStringResource = "随机播放音乐"
+    static var description = IntentDescription("在 Music 中随机播放资料库里的音乐")
+    static var openAppWhenRun = false
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        PlayIntentLog.write("shuffle intent enter")
+        let service = ConversionService.current ?? ConversionService.shared
+        PlayIntentLog.write("shuffle intent service ready")
+
+        let player = service.player
+        let items = service.library.items
+        PlayIntentLog.write("shuffle intent items=\(items.count)")
+        guard !items.isEmpty else { return .result() }
+
+        player.setMode(.shuffle)
+        if player.currentID == nil {
+            player.play(items: items, startIndex: 0)
+        } else {
+            PlayIntentLog.write("shuffle intent resume")
+            player.play()
+        }
+        return .result()
+    }
+}
+
 /// 让这个 Intent 出现在快捷指令和 Siri 的 App 快捷操作里。
 struct MusicShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
@@ -36,6 +67,12 @@ struct MusicShortcuts: AppShortcutsProvider {
             phrases: ["用\(.applicationName)播放音乐", "在\(.applicationName)里播放"],
             shortTitle: "播放",
             systemImageName: "play.fill"
+        )
+        AppShortcut(
+            intent: ShuffleMusicIntent(),
+            phrases: ["用\(.applicationName)随机播放音乐", "在\(.applicationName)里随机播放"],
+            shortTitle: "随机播放",
+            systemImageName: "shuffle"
         )
     }
 }
