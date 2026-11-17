@@ -4,6 +4,7 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var service: ConversionService
     @EnvironmentObject private var player: MediaPlayer
+    @ObservedObject private var apifyKeys = ApifyKeyStore.shared
     @Environment(\.scenePhase) private var scenePhase
 
     /// 设置面板挂在根上：资料库齿轮和确认框里的「去设置」都开同一个。
@@ -134,7 +135,10 @@ struct RootView: View {
     /// YouTube 走 Apify 是要花钱的、而且没 token 就一定失败，所以不该让它跟着倒计时自动入队：
     /// 5 秒后自动失败一次，用户还得自己猜到是缺 token。改成当场说明白、把人送去填。
     private func blockedReason(for prompt: ClipboardPrompt) -> String? {
-        guard prompt.isPaid, !service.hasApifyToken else { return nil }
-        return "这批里有 YouTube 链接，还没填 Apify token —— 去右上角设置里填一次。"
+        guard prompt.isPaid, !apifyKeys.hasUsableKey else { return nil }
+        if apifyKeys.hasAnyKey {
+            return "这批里有 YouTube 链接，但所有 Apify key 都不可用 —— 去设置里充值或换一个。"
+        }
+        return "这批里有 YouTube 链接，还没填 Apify token —— 去右上角设置里加一个。"
     }
 }

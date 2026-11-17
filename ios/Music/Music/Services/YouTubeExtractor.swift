@@ -10,6 +10,8 @@ import Foundation
 
 enum YouTubeError: LocalizedError {
     case missingToken
+    /// 有 key，但这一轮全都不可用（余额不足 / 失效），且没有更多可换的。
+    case noUsableKey(Int)
     case videoID
     case submitFailed(String)
     case runFailed(String)
@@ -20,7 +22,9 @@ enum YouTubeError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingToken: return "还没填 Apify token：右上角设置里填一次"
+        case .missingToken: return "还没填 Apify token：右上角设置里加一个"
+        case .noUsableKey(let count):
+            return "所有 \(count) 个 Apify key 都不可用（余额不足或已失效），去设置里充值或换一个"
         case .videoID: return "链接里没认出 YouTube 视频 ID"
         case .submitFailed(let detail): return "提交 Apify 任务失败：\(detail)"
         case .runFailed(let detail): return "Apify 任务失败：\(detail)"
@@ -35,29 +39,23 @@ enum YouTubeError: LocalizedError {
     }
 }
 
-/// HTTP 401/403 在 Apify 这边就是「这个 token 不行」：可能是拼错了、被撤销了，
-/// 或者账号没权限用这个 actor。三种都只有一个动作 —— 去设置里换一个，所以合成一个错误。
-/// 参数带上状态码，是为了万一其实是别的原因，日志里还留得下线索。
-struct YouTubeAuthError: LocalizedError {
-    let statusCode: Int
-
-    var errorDescription: String? {
-        "Apify token 无效或没权限（HTTP \(statusCode)），去设置里换一个"
-    }
-}
-
 /// YouTube 取流所需的全部参数集中在这里，便于接口变化时统一调整。
 struct YouTubeConfig {
     var apiBase = "https://api.apify.com/v2"
     var actorID = "lurkapi~youtube-to-mp3-audio-downloader"
-    var audioFormat = "mp3"
-    /// 320k 是 actor 的最高档，比公司自建服务那条链路的 192k 高一档。
-    var audioBitrate = "320k"
+    /// 输出容器用 M4A（AAC）。实测 MP3 320k 的「高码率」只是转码目标：
+    /// 如果 actor 选到 YouTube 的 128k AAC 轨，再转成 320k MP3 就是二次损失，
+    /// 频谱仍然卡在 16 kHz。M4A 让 iOS 走硬件解码，文件也更小。
+    var audioFormat = "m4a"
+    /// 256k 是请求上限，actor 不会超过源码率（YouTube 免费档最高 160k Opus）。
+    /// 关键不是这个数字，而是让 actor 从最佳音轨转一次 AAC，而不是
+    /// 「128k AAC → 320k MP3」多损失一次。
+    var audioBitrate = "256k"
     /// 由 `audioBitrate` 推出的平均码流（字节/秒），给「体积反推码流」那道校验用。
-    /// 解析不出来就按 320k 算 —— 那是这里的默认档，也是最高档，宁可判严不判松。
+    /// 解析不出来就按 256k 算 —— 那是这里的默认档，宁可判严不判松。
     var expectedBytesPerSecond: Double {
         let digits = audioBitrate.lowercased().hasSuffix("k") ? audioBitrate.dropLast() : audioBitrate[...]
-        return (Double(digits) ?? 320) * 1000 / 8
+        return (Double(digits) ?? 256) * 1000 / 8
     }
     /// ⚠️ **必须显式指定住宅代理，不能让它自动选。**
     /// actor 的自动选择会落到数据中心代理，而 YouTube 直接封数据中心 IP ——
@@ -100,13 +98,53 @@ actor YouTubeExtractor: MediaExtracting {
         to destination: URL,
         onStage: @Sendable @escaping (String, FetchProgress) -> Void
     ) async throws -> ExtractedMedia {
-        // token 每次现读钥匙串：用户在设置里换掉之后立刻生效，不用重启 App。
-        guard let token = KeychainStore.string(forKey: KeychainStore.apifyTokenKey),
-              !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { throw YouTubeError.missingToken }
-
         guard let videoID = Self.videoID(of: url) else { throw YouTubeError.videoID }
 
+        let store = await ApifyKeyStore.shared
+        guard await store.hasAnyKey else { throw YouTubeError.missingToken }
+
+        // 一轮最多把每个 key 各试一次。key 级失败（401/402/余额类 403）就换下一个，
+        // 429 只换本轮、不把 key 判死；普通视频失败原样抛出，不重复下单。
+        var attempted = Set<UUID>()
+        var lastRejection: ApifyKeyRejection?
+        while true {
+            guard let credential = await store.nextCredential(excluding: attempted) else {
+                if let lastRejection { throw lastRejection }
+                throw YouTubeError.noUsableKey(await store.keys.count)
+            }
+            attempted.insert(credential.id)
+
+            do {
+                return try await fetchOnce(
+                    videoID: videoID,
+                    token: credential.token,
+                    destination: destination,
+                    onStage: onStage
+                )
+            } catch let rejection as ApifyKeyRejection {
+                lastRejection = rejection
+                MusicDebug.log("Apify key \(credential.id.uuidString.prefix(8)) \(rejection.kind) 失败，尝试下一个")
+                if let state = rejection.keyState {
+                    await store.mark(
+                        credential.id,
+                        state: state,
+                        reason: rejection.errorDescription
+                    )
+                } else {
+                    await store.noteFailure(credential.id, reason: rejection.errorDescription)
+                }
+            }
+        }
+    }
+
+    /// 用一条指定 key 跑完整链路。只有 key 级错误会以 `ApifyKeyRejection` 冒出，
+    /// 由上层决定换 key；run 已经创建之后的普通失败不在这里重试。
+    private func fetchOnce(
+        videoID: String,
+        token: String,
+        destination: URL,
+        onStage: @Sendable @escaping (String, FetchProgress) -> Void
+    ) async throws -> ExtractedMedia {
         onStage("提交 Apify 任务", .at(0.04))
         let run = try await startRun(videoID: videoID, token: token)
         MusicDebug.log("YouTube \(videoID) → Apify run \(run.id)")
@@ -122,7 +160,17 @@ actor YouTubeExtractor: MediaExtracting {
         MusicDebug.log("Apify run \(run.id) 完成，等了 \(Int(Date().timeIntervalSince(waited)))s")
 
         onStage("取结果", .at(0.5))
-        let item = try await resultItem(run: run, videoID: videoID, token: token)
+        let item: ResultItem
+        do {
+            item = try await resultItem(run: run, videoID: videoID, token: token)
+        } catch let rejection as ApifyKeyRejection {
+            // run 已经创建并成功，此时换 key 重跑会再开一单、重复计费。
+            // 宁可把这次报失败让用户决定，也不偷偷重下。
+            throw YouTubeError.runFailed(
+                "任务已创建但取结果失败（\(rejection.errorDescription ?? "凭据不可用")），"
+                    + "不自动重跑以免重复计费"
+            )
+        }
         guard let audioURL = item.audioFileURL else {
             throw YouTubeError.noAudio(item.status ?? "actor 没有给出音频地址")
         }
@@ -205,7 +253,7 @@ actor YouTubeExtractor: MediaExtracting {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         let (data, response) = try await session.data(for: request)
-        try Self.check(response)
+        try Self.check(response, data: data)
         guard Self.looksLikeImage(data) else {
             throw YouTubeError.downloadRejected("封面不是图片")
         }
@@ -276,7 +324,17 @@ actor YouTubeExtractor: MediaExtracting {
     ) async throws {
         let start = Date()
         while true {
-            let json = try await getJSON(path: "actor-runs/\(run.id)", token: token)
+            let json: [String: Any]
+            do {
+                json = try await getJSON(path: "actor-runs/\(run.id)", token: token)
+            } catch let rejection as ApifyKeyRejection {
+                // 轮询时 key 失效/被限流：run 可能还在跑，换 key 重开会重复计费。
+                // 只有下面「run 明确以余额问题失败」才允许上层轮转。
+                throw YouTubeError.runFailed(
+                    "任务已创建但轮询失败（\(rejection.errorDescription ?? "凭据不可用")），"
+                        + "不自动重跑以免重复计费"
+                )
+            }
             let data = json["data"] as? [String: Any]
             let status = data?["status"] as? String ?? ""
 
@@ -284,6 +342,11 @@ actor YouTubeExtractor: MediaExtracting {
                 guard status == "SUCCEEDED" else {
                     // run 级别的报错信息通常在 statusMessage 里；没有就只说状态码
                     let detail = data?["statusMessage"] as? String
+                    // 明确是余额/额度问题就换 key 重试；私享、年龄限制、直播回放
+                    // 这类普通失败不换，避免同一个视频在别的账号上再扣一次钱。
+                    if let rejection = ApifyErrorClassifier.rejection(runMessage: detail) {
+                        throw rejection
+                    }
                     throw YouTubeError.runFailed(
                         detail?.isEmpty == false ? "\(status)：\(detail!)" : status
                     )
@@ -372,14 +435,14 @@ actor YouTubeExtractor: MediaExtracting {
             token: token
         )
         let (data, response) = try await session.data(from: url)
-        try Self.check(response)
+        try Self.check(response, data: data)
         guard let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw YouTubeError.noAudio("结果不是预期的列表")
         }
         return list
     }
 
-    // MARK: - 下载 mp3
+    // MARK: - 下载音频
 
     private func download(
         _ audioURL: URL,
@@ -402,7 +465,7 @@ actor YouTubeExtractor: MediaExtracting {
             try? FileManager.default.removeItem(at: destination)
             throw YouTubeError.downloadRejected("文件过小")
         }
-        guard try Self.looksLikeMP3(destination) else {
+        guard try Self.looksLikeAudio(destination) else {
             try? FileManager.default.removeItem(at: destination)
             throw YouTubeError.downloadRejected("下载内容不是有效音频")
         }
@@ -449,17 +512,19 @@ actor YouTubeExtractor: MediaExtracting {
         }
     }
 
-    /// 校验 MP3 头：ID3 标签、或 MPEG 帧同步。只读前 64 字节 ——
-    /// 这一步是为了挡住「把 HTML 报错页当音频存下来」。
-    static func looksLikeMP3(_ url: URL) throws -> Bool {
+    /// 校验音频容器：MP3（ID3 标签或 MPEG 帧同步）或 M4A（ISO-BMFF 的 `ftyp` 盒子）。
+    /// 只读前 64 字节 —— 这一步是为了挡住「把 HTML 报错页当音频存下来」。
+    static func looksLikeAudio(_ url: URL) throws -> Bool {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         let head = try handle.read(upToCount: 64) ?? Data()
         if head.count >= 3, Array(head.prefix(3)) == Array("ID3".utf8) { return true }
-        guard head.count >= 2 else { return false }
         let bytes = [UInt8](head)
-        // 帧同步字：11 个 1（0xFF 后跟 0xE0 掩码）
-        return bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0
+        guard bytes.count >= 2 else { return false }
+        // MP3 帧同步字：11 个 1（0xFF 后跟 0xE0 掩码）
+        if bytes[0] == 0xFF, (bytes[1] & 0xE0) == 0xE0 { return true }
+        // M4A/MP4：前 4 字节是 box 长度，紧跟 `ftyp`。
+        return bytes.count >= 8 && Array(bytes[4..<8]) == Array("ftyp".utf8)
     }
 
     // MARK: - 纯函数（可命令行单测，不联网）
@@ -535,22 +600,24 @@ actor YouTubeExtractor: MediaExtracting {
         }
 
         let (data, response) = try await session.data(for: request)
-        try Self.check(response)
+        try Self.check(response, data: data)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw YouTubeError.submitFailed("返回不是 JSON（\(data.count) 字节）")
         }
         return json
     }
 
-    private static func check(_ response: URLResponse) throws {
+    private static func check(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
-        switch http.statusCode {
-        case 200..<300:
-            return
-        case 401, 403:
-            throw YouTubeAuthError(statusCode: http.statusCode)
-        default:
-            throw YouTubeError.submitFailed("HTTP \(http.statusCode)")
+        guard !(200..<300).contains(http.statusCode) else { return }
+
+        // 401/402/余额类 403/429 交给 key 级错误；上层据此决定换 key。
+        // 其余状态码是普通失败，带上 Apify 返回的那句话，别只剩一个数字。
+        if let rejection = ApifyErrorClassifier.rejection(statusCode: http.statusCode, body: data) {
+            throw rejection
         }
+        let detail = ApifyErrorClassifier.message(from: data)
+        let code = "HTTP \(http.statusCode)"
+        throw YouTubeError.submitFailed(detail.map { "\(code)：\($0)" } ?? code)
     }
 }

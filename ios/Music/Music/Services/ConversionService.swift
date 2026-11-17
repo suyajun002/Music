@@ -97,10 +97,6 @@ final class ConversionService: ObservableObject {
     /// 本次启动已经尝试补过封面的条目，避免同一首在一次会话里反复打网络。
     private var artworkBackfillAttempted = Set<String>()
 
-    /// 有没有配 Apify token。界面靠它决定「要不要提示先去设置里填一个」——
-    /// 不把 token 本身发布出去，视图没有任何理由拿到那个值。
-    @Published private(set) var hasApifyToken: Bool
-
     init() {
         // 上次被掐断的半截下载会堆在 tmp 里（实测到过 1GB+），启动先清干净
         let purged = MediaDownloader.purgeOrphanedTempFiles()
@@ -115,9 +111,6 @@ final class ConversionService: ObservableObject {
         self.library = library
         self.player = player
         MediaIntentDonation.reportLibraryContext(itemCount: library.items.count)
-        self.hasApifyToken = KeychainStore.string(forKey: KeychainStore.apifyTokenKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-
         let stored = UserDefaults.standard.integer(forKey: Self.concurrencyKey)
         let initial = Self.concurrencyOptions.contains(stored) ? stored : 3
         // init 里赋值不会触发 didSet，所以闸门上限要显式对齐一次。
@@ -130,22 +123,10 @@ final class ConversionService: ObservableObject {
         PlayIntentLog.write("app init, items=\(library.items.count)")
     }
 
-    /// 换 Apify token。存钥匙串、立刻生效，不用重启 —— 取流那边每次调用现读。
-    func setApifyToken(_ token: String?) {
-        let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let changed = KeychainStore.set(trimmed, forKey: KeychainStore.apifyTokenKey)
-        if !changed { MusicDebug.log("Apify token 写入钥匙串失败") }
-        hasApifyToken = !(trimmed?.isEmpty ?? true)
-    }
-
-    /// 验证 token：优先验输入框里那份，没填就验已保存的 —— 两种意图都自然。
-    /// 拿它打一个只读接口，填错了当场知道，不用等一次下载失败。返回账号名。
-    func verifyApifyToken(_ draft: String?) async throws -> String {
-        let trimmed = draft?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let token = trimmed.isEmpty
-            ? (KeychainStore.string(forKey: KeychainStore.apifyTokenKey) ?? "")
-            : trimmed
-        return try await youtube.verify(token: token)
+    /// 验证一条指定 token。拿它打一个只读接口，填错了当场知道，
+    /// 不用等一次下载失败。返回账号名。
+    func verifyApifyToken(_ token: String) async throws -> String {
+        try await youtube.verify(token: token)
     }
 
     var activeCount: Int { jobs.filter { $0.state.isActive }.count }

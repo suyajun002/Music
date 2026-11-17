@@ -6,12 +6,12 @@ enum MediaSource: String, CaseIterable, Codable {
     case douyin
     case youtube
 
-    /// 落到沙盒时用什么扩展名。抖音下的是无水印 MP4；YouTube 那头是 Apify 用 yt-dlp
-    /// 转好的 MP3。这一条决定了入库后是「有画面」还是「只有封面」（见 `MediaKind`）。
+    /// 落到沙盒时用什么扩展名。抖音下的是无水印 MP4；YouTube 那头是 Apify 转好的
+    /// M4A（AAC）。这一条决定了入库后是「有画面」还是「只有封面」（见 `MediaKind`）。
     var fileExtension: String {
         switch self {
         case .douyin: return "mp4"
-        case .youtube: return "mp3"
+        case .youtube: return "m4a"
         }
     }
 

@@ -10,6 +10,7 @@ struct SettingsView: View {
     @EnvironmentObject private var service: ConversionService
     @EnvironmentObject private var player: MediaPlayer
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var keyStore = ApifyKeyStore.shared
     @State private var path: [SettingsRoute]
 
     init(initialRoute: SettingsRoute? = nil) {
@@ -17,9 +18,10 @@ struct SettingsView: View {
     }
 
     /// 输入框里的新 token。**不回填已保存的那份**：没必要让密钥进视图状态，
-    /// 而且这一栏的语义本来就清楚 —— 「填了就覆盖，留空不动」。
+    /// 而且这一栏的语义本来就清楚 —— 「填了就追加，留空不动」。
     @State private var draft = ""
     @State private var verify = VerifyState.idle
+    @State private var confirmsClear = false
     @AppStorage(LoudnessStore.enabledKey) private var loudnessNormalization = true
 
     private enum VerifyState: Equatable {
@@ -57,29 +59,39 @@ struct SettingsView: View {
 
     private var youtubeSection: some View {
         Section {
-            SecureField("粘贴 Apify token", text: $draft)
+            SecureField("粘贴 Apify token（可一次粘多个，用空格或换行分开）", text: $draft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.callout.monospaced())
 
             HStack {
-                Button("保存") { save() }
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("添加") { addTokens() }
+                    .disabled(
+                        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || verify == .working
+                    )
 
-                Button("验证") { Task { await runVerify() } }
-                    .disabled(verify == .working)
+                Button("检查全部") { Task { await runVerify(ids: nil) } }
+                    .disabled(!keyStore.hasAnyKey || verify == .working)
 
                 Spacer()
 
-                if service.hasApifyToken {
-                    Button("清除", role: .destructive) {
-                        service.setApifyToken(nil)
-                        draft = ""
-                        verify = .idle
-                    }
+                if keyStore.hasAnyKey {
+                    Button("清除全部", role: .destructive) { confirmsClear = true }
                 }
             }
             .font(.subheadline)
+
+            ForEach(keyStore.keys) { key in
+                keyRow(key)
+            }
+            .onDelete { offsets in
+                for index in offsets {
+                    guard keyStore.keys.indices.contains(index) else { continue }
+                    keyStore.remove(keyStore.keys[index].id)
+                }
+                verify = .idle
+            }
 
             verifyStatus
         } header: {
@@ -89,11 +101,65 @@ struct SettingsView: View {
             手机上跑不了 yt-dlp，所以 YouTube 这条走 Apify 的现成 actor：你得有个 Apify 账号，
             在 Apify 控制台 → Settings → API & Integrations 里拿 token，粘到这里。
 
-            token 存在这台手机的钥匙串里（不进 iCloud 备份、不进本机备份），换一个存一个，存完立刻生效。
+            可以加多个账号的 token。取流时优先用第一个「可用」的 key；遇到余额不足或额度用完，
+            会自动切到下一个，不中断当前任务。全部都不可用时任务才会失败，并提示去充值或换 key。
+
+            充值后点「检查全部」，验证通过会把 key 恢复为可用。
+
+            token 存在这台手机的钥匙串里（不进 iCloud 备份、不进本机备份），列表只显示末 4 位。
 
             ⚠️ 这条路**按音频时长计费**：实测均值约 $0.068/首（≈¥0.5），单首 1~3 分钟；
             下载失败不收下载费。免费套餐每月 $5，大约够 73 首。
             """)
+        }
+        .alert("清除全部 Apify key？", isPresented: $confirmsClear) {
+            Button("取消", role: .cancel) {}
+            Button("清除", role: .destructive) {
+                keyStore.removeAll()
+                draft = ""
+                verify = .idle
+            }
+        } message: {
+            Text("这台手机上保存的所有 token 都会被删掉，已下载的歌不受影响。")
+        }
+    }
+
+    private func keyRow(_ key: ApifyKeySummary) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(key.label ?? "未验证账号")
+                        .font(.subheadline)
+                    if key.isCurrent {
+                        Text("当前")
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    }
+                }
+                Text(key.maskedToken)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                if let error = key.lastError, key.state != .active {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            Text(key.state.displayName)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(stateColor(key.state))
+        }
+    }
+
+    private func stateColor(_ state: ApifyKeyState) -> Color {
+        switch state {
+        case .active: return .green
+        case .exhausted: return .orange
+        case .invalid: return .red
         }
     }
 
@@ -101,18 +167,24 @@ struct SettingsView: View {
     private var verifyStatus: some View {
         switch verify {
         case .idle:
-            if service.hasApifyToken {
-                Label("已保存", systemImage: "checkmark.seal")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if keyStore.hasAnyKey {
+                let active = keyStore.keys.filter { $0.state == .active }.count
+                Label(
+                    active > 0
+                        ? "\(active) 个可用 / 共 \(keyStore.keys.count) 个"
+                        : "没有可用 key，去充值或换一个",
+                    systemImage: active > 0 ? "key.fill" : "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(active > 0 ? Color.secondary : Color.orange)
             }
         case .working:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("正在验证…").font(.caption).foregroundStyle(.secondary)
+                Text("正在检查 key…").font(.caption).foregroundStyle(.secondary)
             }
-        case .ok(let username):
-            Label("token 可用，账号 \(username)", systemImage: "checkmark.circle.fill")
+        case .ok(let message):
+            Label(message, systemImage: "checkmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(.green)
         case .failed(let message):
@@ -122,23 +194,30 @@ struct SettingsView: View {
         }
     }
 
-    private func save() {
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        service.setApifyToken(trimmed)
+    private func addTokens() {
+        let raw = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return }
+        let ids = keyStore.add(tokens: raw)
         draft = ""
-        verify = .idle
-        MusicDebug.log("已保存 Apify token（\(trimmed.count) 字符）")
+        guard !ids.isEmpty else {
+            verify = .failed("这个 token 已经在列表里，而且当前可用")
+            return
+        }
+        MusicDebug.log("已添加 Apify key \(ids.count) 个")
+        Task { await runVerify(ids: Set(ids)) }
     }
 
-    private func runVerify() async {
+    private func runVerify(ids: Set<UUID>?) async {
         verify = .working
-        do {
-            // 输入框里有新的就验新的，没填就验已保存的那份 —— 两种意图都自然。
-            let username = try await service.verifyApifyToken(draft)
-            verify = .ok(username)
-        } catch {
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            verify = .failed(message)
+        let report = await keyStore.verify(ids: ids) { token in
+            try await service.verifyApifyToken(token)
+        }
+        if report.total == 0 {
+            verify = .idle
+        } else if report.failed == 0 {
+            verify = .ok(report.summary)
+        } else {
+            verify = .failed(report.summary)
         }
     }
 
